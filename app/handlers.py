@@ -14,26 +14,26 @@ router = Router()
 async def start_work(message: Message):
     try:
         user_id = message.from_user.id
-        print(f"Received 'старт' command from user_id: {user_id}")
+        
+        # Проверка, не началась ли работа уже ранее
+        user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
+        if user and user.started:
+            await message.answer("Вы уже начали работу!")
+            return
 
         general_id = add_general_info()
-        print(f"Generated general_id: {general_id}")
-
         add_user_info(user_id, general_id, start_time=datetime.utcnow(), started=True)
-        print(f"Added user info for user_id: {user_id}, general_id: {general_id}")
 
         phrase = get_random_phrase()
-        print(f"Fetched motivational phrase: {phrase}")
-
         await message.answer(phrase)
         await message.answer("Продуктивного дня!")
-        print("Sent start message to user.")
         
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
             print("Bot was blocked by the user.")
         else:
             print(f"An error occurred: {e}")
+
 
 @router.message(lambda message: message.text and message.text.startswith("+"))
 async def add_lead(message: Message):
