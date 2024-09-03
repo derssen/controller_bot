@@ -1,7 +1,10 @@
-from sqlalchemy import create_engine, func
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from sqlalchemy import create_engine, func, select, update, insert, Table, MetaData
 from sqlalchemy.orm import sessionmaker, Session
 from app.database.models import MotivationalPhrases, UserInfo, GeneralInfo
 from datetime import datetime, timedelta
+from config import JSON_FILE
 
 # Укажите путь к вашей базе данных
 DATABASE_URL = 'sqlite:///database.db'
@@ -10,6 +13,10 @@ DATABASE_URL = 'sqlite:///database.db'
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 session = Session()
+
+# Определение таблицы
+metadata = MetaData()
+names_table = Table('names', metadata, autoload_with=engine)
 
 def format_duration(duration):
     """
@@ -152,3 +159,50 @@ def end_work(user_id, end_time):
     finally:
         session.close()
 
+def add_admin_to_db(user_id, user_name):
+    try:
+        # Создаем сессию
+        with Session() as session:
+            # Проверяем, существует ли уже такой пользователь в базе
+            result = session.execute(select(names_table.c.real_user_id).where(names_table.c.real_user_id == user_id)).fetchone()
+
+            if result:
+                # Обновляем имя, если пользователь уже есть в базе
+                session.execute(
+                    names_table.update().where(names_table.c.real_user_id == user_id).values(real_name=user_name)
+                )
+                print(f"Updated existing admin with user_id {user_id} to name: {user_name}")
+            else:
+                # Вставляем нового пользователя
+                session.execute(
+                    names_table.insert().values(real_user_id=user_id, real_name=user_name)
+                )
+                print(f"Added new admin with user_id {user_id} and name: {user_name}")
+            
+            # Сохраняем изменения
+            session.commit()
+
+            # Создаем страницу в Google Sheets при успешном добавлении
+            update_sheet(user_name)
+            print(f"Worksheet '{user_name}' created.")
+    except Exception as e:
+        print(f"Failed to add admin: {e}")
+
+def authorize_google_sheets():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name(JSON_FILE, scope)
+    client = gspread.authorize(creds)
+    return client
+
+
+def update_sheet(real_name):
+    client = authorize_google_sheets()
+    spreadsheet = client.open("BALI LOVERS")
+
+    try:
+        worksheet = spreadsheet.worksheet(real_name)
+        print(f"Worksheet '{real_name}' exists.")
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = spreadsheet.add_worksheet(title=real_name, rows="100", cols="20")
+        worksheet.update('A1', [[real_name]])
+        print(f"Worksheet '{real_name}' created.")
