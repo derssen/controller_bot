@@ -103,21 +103,14 @@ async def finish_work(message: Message):
     try:
         user_id = message.from_user.id
         user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
-        
-        if user and user.started:
-            daily_message, total_message = end_work(user_id, end_time=datetime.utcnow())
-            await message.answer(daily_message)
-            await message.answer(total_message)
-        elif user and not user.started:
-            await message.answer("Ты сегодня не закрыл ни одного лида, в следующий раз постарайся лучше!")
-        else:
-            await message.answer("Вы не начали работу. Пожалуйста, используйте команду 'старт' для начала работы.")
+
+        await message.answer("Спасибо за работу и приятного отдыха!")
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
             print("Bot was blocked by the user.")
     export_google.main()
 
-# # # 
+# # # DELETE daily_message and total_message
 
 @router.message(lambda message: message.text and message.text.lower() == "старт")
 async def start_work(message: Message):
