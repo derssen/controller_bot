@@ -42,15 +42,15 @@ def fetch_user_data(user_id):
 def get_user_name(user_id):
     query = select(names_table).where(names_table.c.real_user_id == user_id)
     result = session.execute(query).fetchone()
-    print(f"Fetched user name: {result[1] if result else 'None'}")
+    #print(f"Fetched user name: {result[1] if result else 'None'}")
     if result:
         return result[1]  # 'real_name' is the second column in the result
     return None
 
 def format_data_for_sheet(user_data):
     date_to_data = {}
-    start_time_idx = 2
-    end_time_idx = 3
+    start_time_idx = 3
+    end_time_idx = 4
     leads_idx = 5
 
     # Group data by date
@@ -218,7 +218,7 @@ def update_sheet(real_name, data):
                         "endIndex": 1     # До второго столбца 'B' (но не включая)
                     },
                     "properties": {
-                        "pixelSize": 170
+                        "pixelSize": 185
                     },
                     "fields": "pixelSize"
                 }
@@ -272,7 +272,7 @@ def update_sheet(real_name, data):
             )
         )
         header_range = f'A2:{last_col}2'
-        print(f"Applying header formatting to range {header_range}")
+        #print(f"Applying header formatting to range {header_range}")
         format_cell_range(worksheet, header_range, header_format)
 
         # Применение выравнивания по центру для всех ячеек кроме первого столбца
@@ -297,7 +297,7 @@ def update_sheet(real_name, data):
         
         for row, fmt in row_formats.items():
             row_range = f'A{row}:{last_col}{row}'
-            print(f"Applying row formatting to range {row_range}")
+            #print(f"Applying row formatting to range {row_range}")
             format_cell_range(worksheet, row_range, fmt)
 
         # Применение формата границ ко всем ячейкам
@@ -310,7 +310,7 @@ def update_sheet(real_name, data):
             )
         )
         border_range = f'A2:{last_col}{num_rows + 1}'
-        print(f"Applying border formatting to range {border_range}")
+        #print(f"Applying border formatting to range {border_range}")
         format_cell_range(worksheet, border_range, border_format)
 
         print(f"Sheet for {real_name} updated successfully.")

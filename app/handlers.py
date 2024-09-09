@@ -73,10 +73,10 @@ async def start_work(message: Message):
         if user and user.started:
             await message.answer("Вы уже начали работу!")
             return
-
+        group_id = message.chat.id
         general_id = add_general_info()
         add_user_info(user_id, general_id, start_time=datetime.utcnow(), started=True)
-
+        group_id = message.chat.id
         phrase = get_random_phrase()
         await message.answer(phrase)
         await message.answer("Продуктивного дня!")
@@ -102,67 +102,20 @@ async def add_lead(message: Message):
 async def finish_work(message: Message):
     try:
         user_id = message.from_user.id
-        user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
+        end_time = datetime.utcnow()  # Время окончания работы
+        
+        # Вызов функции end_work для записи времени окончания работы в базу данных
+        daily_message, total_message = end_work(user_id, end_time)
+        
+        # Отправка сообщений пользователю
+        #await message.answer(daily_message)
+        #await message.answer(total_message)
 
         await message.answer("Спасибо за работу и приятного отдыха!")
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
             print("Bot was blocked by the user.")
-    export_google.main()
-
-# # # DELETE daily_message and total_message
-
-@router.message(lambda message: message.text and message.text.lower() == "старт")
-async def start_work(message: Message):
-    try:
-        user_id = message.from_user.id
-        
-        # Проверка, не началась ли работа уже ранее
-        user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
-        if user and user.started:
-            await message.answer("Вы уже начали работу!")
-            return
-
-        general_id = add_general_info()
-        add_user_info(user_id, general_id, start_time=datetime.utcnow(), started=True)
-
-        phrase = get_random_phrase()
-        await message.answer(phrase)
-        await message.answer("Продуктивного дня!")
-        
-    except Exception as e:
-        if 'bot was blocked by the user' in str(e):
-            print("Bot was blocked by the user.")
         else:
             print(f"An error occurred: {e}")
-
-
-@router.message(lambda message: message.text and message.text.startswith("+"))
-async def add_lead(message: Message):
-    try:
-        user_id = message.from_user.id
-        leads = int(message.text.lstrip('+'))
-        update_leads(user_id, leads)
-        #await message.answer("Лиды учтены!")  # по требованию заказчика
-    except Exception as e:
-        if 'bot was blocked by the user' in str(e):
-            print("Bot was blocked by the user.")
-
-@router.message(lambda message: message.text and message.text.lower() == "финиш")
-async def finish_work(message: Message):
-    try:
-        user_id = message.from_user.id
-        user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
-        
-        if user and user.started:
-            daily_message, total_message = end_work(user_id, end_time=datetime.utcnow())
-            await message.answer(daily_message)
-            await message.answer(total_message)
-        elif user and not user.started:
-            await message.answer("Ты сегодня не закрыл ни одного лида, в следующий раз постарайся лучше!")
-        else:
-            await message.answer("Вы не начали работу. Пожалуйста, используйте команду 'старт' для начала работы.")
-    except Exception as e:
-        if 'bot was blocked by the user' in str(e):
-            print("Bot was blocked by the user.")
-    export_google.main()    
+    
+    export_google.main()  # Экспорт данных в Google Sheets
