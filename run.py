@@ -1,6 +1,6 @@
 import logging
 import asyncio
-
+import app.scheduler
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
@@ -20,7 +20,7 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     
     dp.include_router(router)
-
+    app.scheduler.check_scheduler_status()
     await set_commands(bot)
     await dp.start_polling(bot)
 

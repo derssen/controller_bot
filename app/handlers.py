@@ -5,7 +5,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from app.database.requests import (
     add_general_info, add_user_info, get_random_phrase, 
-    update_leads, end_work, session, add_admin_to_db
+    update_leads, end_work, session, add_admin_to_db,
+    update_group_id
 )
 from app.database.models import UserInfo
 from config import ALLOWED_IDS
@@ -77,10 +78,12 @@ async def start_work(message: Message):
         general_id = add_general_info()
         add_user_info(user_id, general_id, start_time=datetime.utcnow(), started=True)
         group_id = message.chat.id
+        update_group_id(user_id, group_id)
         phrase = get_random_phrase()
         await message.answer(phrase)
         await message.answer("Продуктивного дня!")
-        
+        export_google.main()  # Экспорт данных в Google Sheets
+
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
             print("Bot was blocked by the user.")
@@ -94,6 +97,7 @@ async def add_lead(message: Message):
         leads = int(message.text.lstrip('+'))
         update_leads(user_id, leads)
         #await message.answer("Лиды учтены!")  # по требованию заказчика
+        export_google.main()  # Экспорт данных в Google Sheets
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
             print("Bot was blocked by the user.")
@@ -112,10 +116,11 @@ async def finish_work(message: Message):
         #await message.answer(total_message)
 
         await message.answer("Спасибо за работу и приятного отдыха!")
+        export_google.main()  # Экспорт данных в Google Sheets
+
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
             print("Bot was blocked by the user.")
         else:
             print(f"An error occurred: {e}")
     
-    export_google.main()  # Экспорт данных в Google Sheets

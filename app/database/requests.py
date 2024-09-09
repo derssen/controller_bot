@@ -191,6 +191,37 @@ def add_admin_to_db(user_id, user_name):
     except Exception as e:
         print(f"Failed to add admin: {e}")
 
+
+def update_group_id(user_id, chat_id):
+    """
+    Обновляет group_id в таблице names для соответствующего real_user_id.
+    
+    Args:
+        user_id (int): ID пользователя (real_user_id).
+        chat_id (int): ID группового чата.
+    """
+    try:
+        with Session() as session:
+            # Проверяем, существует ли пользователь
+            result = session.execute(
+                select(names_table.c.real_user_id).where(names_table.c.real_user_id == user_id)
+            ).fetchone()
+
+            if result:
+                # Обновляем group_id, если пользователь существует
+                session.execute(
+                    update(names_table)
+                    .where(names_table.c.real_user_id == user_id)
+                    .values(group_id=chat_id)
+                )
+                session.commit()
+                print(f"Updated group_id for user_id {user_id} to chat_id {chat_id}.")
+            else:
+                print(f"User with user_id {user_id} not found.")
+    except Exception as e:
+        print(f"Failed to update group_id: {e}")
+
+
 def authorize_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name(JSON_FILE, scope)
@@ -211,4 +242,4 @@ def update_sheet(real_name):
         print(f"Worksheet '{real_name}' created.")
 
 
-        ### TODO добавить функциб добавления чат айди
+
