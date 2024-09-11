@@ -43,7 +43,7 @@ async def add_admin(message: Message, state: FSMContext):
 # Обработка нажатия на кнопку "добавить руководителя"
 @router.message(F.text == "Добавить руководителя", F.from_user.id.in_(ALLOWED_IDS))
 async def add_admin(message: Message, state: FSMContext):
-    await message.answer("Пожалуйста, пересланное сообщение от пользователя или введите user_id.")
+    await message.answer("Пожалуйста, пересланное сообщение от руководителя или введите user_id.")
     await state.set_state(AddHeadState.waiting_for_user)
 
 # Менеджер: Обработка пересланного сообщения или ввода user_id
@@ -82,7 +82,7 @@ async def process_admin_name(message: Message, state: FSMContext):
     data = await state.get_data()
     user_id = data['user_id']
     # Вызов функции для добавления администратора в базу данных
-    add_head_to_db(user_id, admin_name)
+    add_admin_to_db(user_id, admin_name)
     await message.answer(f"Менеджер с именем {admin_name} и user_id {user_id} был добавлен.")
     await state.clear()
 
@@ -93,7 +93,7 @@ async def process_admin_name(message: Message, state: FSMContext):
     data = await state.get_data()
     user_id = data['user_id']
     # Вызов функции для добавления администратора в базу данных
-    add_admin_to_db(user_id, admin_name)
+    add_head_to_db(user_id, admin_name)
     await message.answer(f"Руководитель с именем {admin_name} и user_id {user_id} был добавлен.")
     await state.clear()
 

@@ -190,7 +190,7 @@ def update_main_sheet():
 # Функция для обновления таблицы
 def update_sheet(real_name, data):
     client = authorize_google_sheets()
-    spreadsheet = client.open("BALI LOVERS")
+    spreadsheet = client.open("Стата Контролер")
     worksheet = spreadsheet.worksheet(real_name)
 
     try:

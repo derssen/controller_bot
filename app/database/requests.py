@@ -190,7 +190,7 @@ def add_admin_to_db(user_id, user_name):
             update_sheet(user_name)
             print(f"Worksheet '{user_name}' created.")
     except Exception as e:
-        print(f"Failed to add admin: {e}")
+        print(f"Failed to add manager: {e}")
 
 def add_head_to_db(user_id, user_name):
     try:
@@ -202,24 +202,21 @@ def add_head_to_db(user_id, user_name):
             if result:
                 # Обновляем имя, если пользователь уже есть в базе
                 session.execute(
-                    names_table.update().where(heads_table.c.head_id == user_id).values(head_name=user_name),
+                    heads_table.update().where(heads_table.c.head_id == user_id).values(head_name=user_name),
                 )
                 print(f"Updated existing head with user_id {user_id} to name: {user_name}")
             else:
                 # Вставляем нового пользователя
                 session.execute(
-                    names_table.insert().values(real_user_id=user_id, real_name=user_name)
+                    heads_table.insert().values(head_id=user_id, head_name=user_name)
                 )
                 print(f"Added new head with user_id {user_id} and name: {user_name}")
             
             # Сохраняем изменения
             session.commit()
 
-            # Создаем страницу в Google Sheets при успешном добавлении
-            update_sheet(user_name)
-            print(f"Worksheet '{user_name}' created.")
     except Exception as e:
-        print(f"Failed to add admin: {e}")
+        print(f"Failed to add head: {e}")
 
 
 def update_group_id(user_id, chat_id):
