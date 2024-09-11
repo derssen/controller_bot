@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from app.database.requests import (
     add_general_info, add_user_info, get_random_phrase, 
     update_leads, end_work, session, add_admin_to_db,
-    add_head_to_db, update_group_id
+    add_head_to_db, update_group_id, get_heads_ids
 )
 from app.database.models import UserInfo
 from config import ALLOWED_IDS
@@ -15,6 +15,8 @@ import export_google
 import app.keyboards as kb
 
 router = Router()
+
+heads_ids = get_heads_ids()
 
 # Определение состояний для FSM
 class AddManagerState(StatesGroup):
@@ -58,11 +60,11 @@ async def process_user_id(message: Message, state: FSMContext):
         return
     await state.update_data(user_id=user_id)
     await message.answer("Теперь введите желаемое имя для менеджера.")
-    await state.set_state(AddHeadState.waiting_for_name)
+    await state.set_state(AddManagerState.waiting_for_name)
 
 # Руководитель: Обработка пересланного сообщения или ввода user_id
 @router.message(AddHeadState.waiting_for_user)
-async def process_user_id(message: Message, state: FSMContext):
+async def process_head_id(message: Message, state: FSMContext):
     if message.forward_from:
         user_id = message.forward_from.id
     elif message.text.isdigit():
@@ -88,13 +90,13 @@ async def process_admin_name(message: Message, state: FSMContext):
 
 # Руководитель: Обработка ввода имени
 @router.message(AddHeadState.waiting_for_name)
-async def process_admin_name(message: Message, state: FSMContext):
-    admin_name = message.text
+async def process_head_name(message: Message, state: FSMContext):
+    head_name = message.text
     data = await state.get_data()
     user_id = data['user_id']
     # Вызов функции для добавления администратора в базу данных
-    add_head_to_db(user_id, admin_name)
-    await message.answer(f"Руководитель с именем {admin_name} и user_id {user_id} был добавлен.")
+    add_head_to_db(user_id, head_name)
+    await message.answer(f"Руководитель с именем {head_name} и user_id {user_id} был добавлен.")
     await state.clear()
 
 @router.message(lambda message: message.text and message.text.lower() == "старт")
@@ -123,17 +125,19 @@ async def start_work(message: Message):
         else:
             print(f"An error occurred: {e}")
 
-@router.message(lambda message: message.text and message.text.startswith("+"))
+@router.message(lambda message: message.text and message.text.startswith("+") and message.from_user.id in heads_ids)
 async def add_lead(message: Message):
     try:
-        user_id = message.from_user.id
+        group_id = message.chat.id
         leads = int(message.text.lstrip('+'))
-        update_leads(user_id, leads)
-        #await message.answer("Лиды учтены!")  # по требованию заказчика
-        export_google.main()  # Экспорт данных в Google Sheets
+        update_leads(group_id, leads)  # Update leads count in the database
+        await message.answer("Лиды учтены!")  # Uncomment if a response is needed
+        export_google.main()  # Export data to Google Sheets
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
             print("Bot was blocked by the user.")
+        else:
+            print(f"An error occurred: {e}")
 
 @router.message(lambda message: message.text and message.text.lower() == "финиш")
 async def finish_work(message: Message):

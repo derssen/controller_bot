@@ -89,21 +89,35 @@ def add_user_info(user_id, general_id, start_time, started=False):
         print(f"Failed to add UserInfo: {e}")
 
 
-def update_leads(user_id, leads):
+def update_leads(chat_id, leads):
     try:
-        user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).order_by(UserInfo.id.desc()).first()
+        # Fetch the real_user_id from the names table using chat_id (group_id)
+        name_entry = session.query(names_table).filter_by(group_id=chat_id).first()
+        
+        if not name_entry:
+            print("No user found with the given chat_id.")
+            return
+
+        real_user_id = name_entry.real_user_id
+        
+        # Fetch the most recent UserInfo entry for the real_user_id where work has not ended
+        user = session.query(UserInfo).filter_by(user_id=real_user_id, end_time=None).order_by(UserInfo.id.desc()).first()
+        
         if user:
+            # If an active user session exists, update the leads
             user.leads += leads
             session.commit()
         else:
+            # If no active session exists, create a new entry
             general_id = add_general_info()
-            # Устанавливаем время начала в текущем времени с часовой зоной Bali
-            start_time = start_time.astimezone(bali_tz)
-            print('=====================start', start_time)
-            add_user_info(user_id, general_id, start_time, started=True)
-            user_info = UserInfo(user_id=user_id, general_id=general_id, leads=leads, start_time=start_time, started=True)
+            start_time = datetime.utcnow().astimezone(bali_tz)  # Set the start time to the current time in Bali timezone
+            
+            # Adding a new user info entry with the leads count
+            add_user_info(real_user_id, general_id, start_time, started=True)
+            user_info = UserInfo(user_id=real_user_id, general_id=general_id, leads=leads, start_time=start_time, started=True)
             session.add(user_info)
             session.commit()
+
     except Exception as e:
         session.rollback()
         print(f"Ошибка при обновлении лидов: {e}")
@@ -114,7 +128,7 @@ def update_leads(user_id, leads):
 def end_work(user_id, end_time):
     try:
         user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
-        
+    
         if user:
             # Конвертируем время окончания в часовой пояс Bali
             end_time = end_time.astimezone(bali_tz)
@@ -258,7 +272,7 @@ def authorize_google_sheets():
 
 def update_sheet(real_name):
     client = authorize_google_sheets()
-    spreadsheet = client.open("BALI LOVERS")
+    spreadsheet = client.open("Стата Контролер")
 
     try:
         worksheet = spreadsheet.worksheet(real_name)
@@ -268,5 +282,12 @@ def update_sheet(real_name):
         worksheet.update('A1', [[real_name]])
         print(f"Worksheet '{real_name}' created.")
 
-
-
+def get_heads_ids():
+    # Connect to the database
+    with Session() as session:
+        # Fetch the head IDs
+        result = session.execute(select(heads_table.c.head_id)).fetchall()
+        # Convert results to a set of IDs
+        heads_ids = {row[0] for row in result}
+        print(heads_ids)
+    return heads_ids
