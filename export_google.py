@@ -92,7 +92,7 @@ def format_data_for_sheet(user_data):
 
 def update_main_sheet():
     client = authorize_google_sheets()
-    spreadsheet = client.open("BALI LOVERS")
+    spreadsheet = client.open("Стата Контролер")
     worksheet = spreadsheet.worksheet('Основная страница')
 
     # Установить текст в ячейке A1

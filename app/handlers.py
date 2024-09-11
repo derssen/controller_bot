@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from app.database.requests import (
     add_general_info, add_user_info, get_random_phrase, 
     update_leads, end_work, session, add_admin_to_db,
-    update_group_id
+    add_head_to_db, update_group_id
 )
 from app.database.models import UserInfo
 from config import ALLOWED_IDS
@@ -17,7 +17,11 @@ import app.keyboards as kb
 router = Router()
 
 # Определение состояний для FSM
-class AddAdminState(StatesGroup):
+class AddManagerState(StatesGroup):
+    waiting_for_user = State()
+    waiting_for_name = State()
+
+class AddHeadState(StatesGroup):
     waiting_for_user = State()
     waiting_for_name = State()
 
@@ -30,14 +34,34 @@ async def cmd_start(message: Message):
     else:
         await message.answer("Привет! \n К сожалению у вас нету никаких прав в этом мире)")
 
-# Обработка нажатия на кнопку "добавить админа"
+# Обработка нажатия на кнопку "добавить менеджера"
 @router.message(F.text == "Добавить менеджера", F.from_user.id.in_(ALLOWED_IDS))
 async def add_admin(message: Message, state: FSMContext):
     await message.answer("Пожалуйста, пересланное сообщение от пользователя или введите user_id.")
-    await state.set_state(AddAdminState.waiting_for_user)
+    await state.set_state(AddManagerState.waiting_for_user)
 
-# Обработка пересланного сообщения или ввода user_id
-@router.message(AddAdminState.waiting_for_user)
+# Обработка нажатия на кнопку "добавить руководителя"
+@router.message(F.text == "Добавить руководителя", F.from_user.id.in_(ALLOWED_IDS))
+async def add_admin(message: Message, state: FSMContext):
+    await message.answer("Пожалуйста, пересланное сообщение от пользователя или введите user_id.")
+    await state.set_state(AddHeadState.waiting_for_user)
+
+# Менеджер: Обработка пересланного сообщения или ввода user_id
+@router.message(AddManagerState.waiting_for_user)
+async def process_user_id(message: Message, state: FSMContext):
+    if message.forward_from:
+        user_id = message.forward_from.id
+    elif message.text.isdigit():
+        user_id = int(message.text)
+    else:
+        await message.answer("Неправильный формат. Пожалуйста, пересланное сообщение или введите user_id.")
+        return
+    await state.update_data(user_id=user_id)
+    await message.answer("Теперь введите желаемое имя для менеджера.")
+    await state.set_state(AddHeadState.waiting_for_name)
+
+# Руководитель: Обработка пересланного сообщения или ввода user_id
+@router.message(AddHeadState.waiting_for_user)
 async def process_user_id(message: Message, state: FSMContext):
     if message.forward_from:
         user_id = message.forward_from.id
@@ -48,20 +72,29 @@ async def process_user_id(message: Message, state: FSMContext):
         return
     
     await state.update_data(user_id=user_id)
-    await message.answer("Теперь введите желаемое имя для менеджера.")
-    await state.set_state(AddAdminState.waiting_for_name)
+    await message.answer("Теперь введите желаемое имя для руководителя.")
+    await state.set_state(AddHeadState.waiting_for_name)
 
-# Обработка ввода имени администратора
-@router.message(AddAdminState.waiting_for_name)
+# Менеджер: Обработка ввода имени
+@router.message(AddManagerState.waiting_for_name)
 async def process_admin_name(message: Message, state: FSMContext):
     admin_name = message.text
     data = await state.get_data()
     user_id = data['user_id']
-    
+    # Вызов функции для добавления администратора в базу данных
+    add_head_to_db(user_id, admin_name)
+    await message.answer(f"Менеджер с именем {admin_name} и user_id {user_id} был добавлен.")
+    await state.clear()
+
+# Руководитель: Обработка ввода имени
+@router.message(AddHeadState.waiting_for_name)
+async def process_admin_name(message: Message, state: FSMContext):
+    admin_name = message.text
+    data = await state.get_data()
+    user_id = data['user_id']
     # Вызов функции для добавления администратора в базу данных
     add_admin_to_db(user_id, admin_name)
-
-    await message.answer(f"Менеджер с именем {admin_name} и user_id {user_id} был добавлен.")
+    await message.answer(f"Руководитель с именем {admin_name} и user_id {user_id} был добавлен.")
     await state.clear()
 
 @router.message(lambda message: message.text and message.text.lower() == "старт")
@@ -123,4 +156,3 @@ async def finish_work(message: Message):
             print("Bot was blocked by the user.")
         else:
             print(f"An error occurred: {e}")
-    

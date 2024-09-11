@@ -40,9 +40,10 @@ def end_work_automatically():
 
 async def send_message_to_user(user_id, message):
     try:
-        daily_message, total_message = end_work(user_id, end_time)
-        await message.answer(daily_message)
-        await message.answer(total_message)
+        await message.answer('Тут будет ваша статистика')
+#        daily_message, total_message = end_work(user_id, end_time)
+ #       await message.answer(daily_message)
+  #      await message.answer(total_message)'''
         print(f"Сообщение отправлено пользователю {user_id}: {message}")
     except Exception as e:
         print(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
@@ -62,8 +63,8 @@ def check_scheduler_status():
 
 # Настройка планировщика
 scheduler = BackgroundScheduler(timezone=bali_tz)
-#scheduler.add_job(end_work_automatically, 'cron', hour=23, minute=59)
-scheduler.add_job(end_work_automatically, 'interval', minutes=1)
+scheduler.add_job(end_work_automatically, 'cron', hour=23, minute=59)
+#scheduler.add_job(end_work_automatically, 'interval', minutes=1)
 
 # Запуск планировщика
 scheduler.start()

@@ -20,6 +20,7 @@ session = Session()
 # Определение таблицы
 metadata = MetaData()
 names_table = Table('names', metadata, autoload_with=engine)
+heads_table = Table('heads', metadata, autoload_with=engine)
 
 def format_duration(duration):
     """
@@ -181,6 +182,35 @@ def add_admin_to_db(user_id, user_name):
                     names_table.insert().values(real_user_id=user_id, real_name=user_name)
                 )
                 print(f"Added new admin with user_id {user_id} and name: {user_name}")
+            
+            # Сохраняем изменения
+            session.commit()
+
+            # Создаем страницу в Google Sheets при успешном добавлении
+            update_sheet(user_name)
+            print(f"Worksheet '{user_name}' created.")
+    except Exception as e:
+        print(f"Failed to add admin: {e}")
+
+def add_head_to_db(user_id, user_name):
+    try:
+        # Создаем сессию
+        with Session() as session:
+            # Проверяем, существует ли уже такой пользователь в базе
+            result = session.execute(select(heads_table.c.head_id).where(heads_table.c.head_id == user_id)).fetchone()
+
+            if result:
+                # Обновляем имя, если пользователь уже есть в базе
+                session.execute(
+                    names_table.update().where(heads_table.c.head_id == user_id).values(head_name=user_name),
+                )
+                print(f"Updated existing head with user_id {user_id} to name: {user_name}")
+            else:
+                # Вставляем нового пользователя
+                session.execute(
+                    names_table.insert().values(real_user_id=user_id, real_name=user_name)
+                )
+                print(f"Added new head with user_id {user_id} and name: {user_name}")
             
             # Сохраняем изменения
             session.commit()
