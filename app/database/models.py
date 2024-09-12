@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, create_engine, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
+from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime
 
 
@@ -39,3 +40,18 @@ class MotivationalPhrases(Base):
     phrase = Column(String, nullable=False)
 
 Base.metadata.create_all(engine)
+
+# Определение состояний для FSM
+class AddManagerState(StatesGroup):
+    waiting_for_user = State()
+    waiting_for_name = State()
+
+class AddHeadState(StatesGroup):
+    waiting_for_user = State()
+    waiting_for_name = State()
+
+class DelManagerState(StatesGroup):
+    waiting_for_user = State()
+
+class DelHeadState(StatesGroup):
+    waiting_for_user = State()

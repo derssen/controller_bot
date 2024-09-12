@@ -1,12 +1,12 @@
 import logging
 import asyncio
 import app.scheduler
-
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.fsm.storage.memory import MemoryStorage
 from config import API_TOKEN
 from app.handlers import router
+
 
 async def set_commands(bot: Bot):
     commands = [

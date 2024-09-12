@@ -4,10 +4,8 @@ from sqlalchemy import create_engine, func, select, update, insert, Table, MetaD
 from sqlalchemy.orm import sessionmaker, Session
 from app.database.models import MotivationalPhrases, UserInfo, GeneralInfo
 from datetime import datetime, timedelta, timezone
-from config import JSON_FILE
+from config import JSON_FILE, DATABASE_URL
 
-# Укажите путь к вашей базе данных
-DATABASE_URL = 'sqlite:///database.db'
 
 # Определение часового пояса для GMT+8
 bali_tz = timezone(timedelta(hours=11))
@@ -206,6 +204,60 @@ def add_admin_to_db(user_id, user_name):
     except Exception as e:
         print(f"Failed to add manager: {e}")
 
+
+def del_manager_from_db(user_id):
+    try:
+        # Создаем сессию с привязкой к движку
+        with Session(bind=engine) as session:
+            # Проверяем, существует ли пользователь в базе
+            result = session.query(names_table.c.real_user_id, names_table.c.real_name).filter(
+                names_table.c.real_user_id == user_id
+            ).first()
+
+            if result:
+                # Извлекаем имя пользователя перед удалением
+                real_user_id, real_name = result
+                # Удаляем пользователя
+                session.query(names_table).filter(names_table.c.real_user_id == user_id).delete()
+                output_text = f"Менеджер  {real_name} и id {real_user_id} удален."
+                print(output_text)
+            else:
+                output_text = f"Менеджер с user_id {user_id} не найден в базе."
+                print(output_text)
+            # Сохраняем изменения
+            session.commit()
+            return output_text
+
+    except Exception as e:
+        print(f"Не удалось удалить менеджера: {e}")
+
+
+def del_head_from_db(user_id):
+    try:
+        # Создаем сессию с привязкой к движку
+        with Session(bind=engine) as session:
+            # Проверяем, существует ли пользователь в базе
+            result = session.query(heads_table.c.head_id, heads_table.c.head_name).filter(
+                heads_table.c.head_id == user_id
+            ).first()
+
+            if result:
+                # Извлекаем имя пользователя перед удалением
+                head_id, head_name = result
+                # Удаляем пользователя
+                session.query(heads_table).filter(heads_table.c.head_id == user_id).delete()
+                output_text = f"Руководитель  {head_name} и id {head_id} удален."
+                print(output_text)
+            else:
+                output_text = f"Руководитель с user_id {user_id} не найден в базе."
+                print(output_text)
+            # Сохраняем изменения
+            session.commit()
+            return output_text
+
+    except Exception as e:
+        print(f"Не удалось удалить руководителя: {e}")
+
 def add_head_to_db(user_id, user_name):
     try:
         # Создаем сессию
@@ -289,5 +341,22 @@ def get_heads_ids():
         result = session.execute(select(heads_table.c.head_id)).fetchall()
         # Convert results to a set of IDs
         heads_ids = {row[0] for row in result}
-        print(heads_ids)
+        print('heads:', heads_ids)
     return heads_ids
+
+
+def show_state_list():
+    # Connect to the database
+    with Session() as session:
+        # Fetch the head names
+        head_names = session.execute(select(heads_table.c.head_name)).scalars().all()
+        # Fetch the manager names
+        manager_names = session.execute(select(names_table.c.real_name)).scalars().all()
+        # Format the names
+        formatted_heads = '\n'.join(head_names)
+        formatted_managers = '\n'.join(manager_names)
+        # Create the result string
+        output_heads = f"Руководители:\n{formatted_heads}"
+        output_managers = f"Менеджеры:\n{formatted_managers}"
+        # Print the result
+    return output_heads, output_managers

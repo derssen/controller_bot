@@ -1,31 +1,22 @@
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart, Command
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from app.database.requests import (
     add_general_info, add_user_info, get_random_phrase, 
     update_leads, end_work, session, add_admin_to_db,
-    add_head_to_db, update_group_id, get_heads_ids
+    add_head_to_db, update_group_id, get_heads_ids,
+    del_manager_from_db, del_head_from_db, show_state_list
 )
-from app.database.models import UserInfo
+from app.database.models import UserInfo, AddManagerState, AddHeadState, DelManagerState, DelHeadState
 from config import ALLOWED_IDS
 from datetime import datetime
 import export_google 
 import app.keyboards as kb
 
+
 router = Router()
-
 heads_ids = get_heads_ids()
-
-# Определение состояний для FSM
-class AddManagerState(StatesGroup):
-    waiting_for_user = State()
-    waiting_for_name = State()
-
-class AddHeadState(StatesGroup):
-    waiting_for_user = State()
-    waiting_for_name = State()
 
 # Команда /start
 @router.message(CommandStart())
@@ -47,6 +38,27 @@ async def add_admin(message: Message, state: FSMContext):
 async def add_admin(message: Message, state: FSMContext):
     await message.answer("Пожалуйста, пересланное сообщение от руководителя или введите user_id.")
     await state.set_state(AddHeadState.waiting_for_user)
+
+# Обработка нажатия на кнопку "удалить менеджера"
+@router.message(F.text == "Удалить менеджера", F.from_user.id.in_(ALLOWED_IDS))
+async def add_admin(message: Message, state: FSMContext):
+    await message.answer("Пожалуйста, пересланное сообщение от пользователя или введите user_id.")
+    await state.set_state(DelManagerState.waiting_for_user)
+
+# Обработка нажатия на кнопку "удалить руководителя"
+@router.message(F.text == "Удалить руководителя", F.from_user.id.in_(ALLOWED_IDS))
+async def add_admin(message: Message, state: FSMContext):
+    await message.answer("Пожалуйста, пересланное сообщение от руководителя или введите user_id.")
+    await state.set_state(DelHeadState.waiting_for_user)
+
+# Обработка нажатия на кнопку "Перечень сотрудников"
+@router.message(F.text == "Перечень сотрудников", F.from_user.id.in_(ALLOWED_IDS))
+async def add_admin(message: Message):
+    heads, managers = show_state_list()
+    await message.answer(heads)
+    await message.answer(managers)
+
+
 
 # Менеджер: Обработка пересланного сообщения или ввода user_id
 @router.message(AddManagerState.waiting_for_user)
@@ -77,6 +89,35 @@ async def process_head_id(message: Message, state: FSMContext):
     await message.answer("Теперь введите желаемое имя для руководителя.")
     await state.set_state(AddHeadState.waiting_for_name)
 
+# Менеджер.Удаление: Обработка пересланного сообщения или ввода user_id
+@router.message(DelManagerState.waiting_for_user)
+async def process_user_id(message: Message, state: FSMContext):
+    if message.forward_from:
+        user_id = message.forward_from.id
+    elif message.text.isdigit():
+        user_id = int(message.text)
+    else:
+        await message.answer("Неправильный формат. Пожалуйста, пересланное сообщение или введите user_id.")
+        return
+    await state.update_data(user_id=user_id)
+    output_text = del_manager_from_db(user_id)
+    await message.answer(output_text)
+
+# Руководитель.Удаление: Обработка пересланного сообщения или ввода user_id
+@router.message(DelHeadState.waiting_for_user)
+async def process_head_id(message: Message, state: FSMContext):
+    if message.forward_from:
+        user_id = message.forward_from.id
+    elif message.text.isdigit():
+        user_id = int(message.text)
+    else:
+        await message.answer("Неправильный формат. Пожалуйста, пересланное сообщение или введите user_id.")
+        return
+    await state.update_data(user_id=user_id)
+    output_text = del_head_from_db(user_id)
+    await message.answer(output_text)
+
+
 # Менеджер: Обработка ввода имени
 @router.message(AddManagerState.waiting_for_name)
 async def process_admin_name(message: Message, state: FSMContext):
@@ -101,6 +142,7 @@ async def process_head_name(message: Message, state: FSMContext):
 
 @router.message(lambda message: message.text and message.text.lower() == "старт")
 async def start_work(message: Message):
+    print('Start pushed')
     try:
         user_id = message.from_user.id
         
@@ -130,6 +172,7 @@ async def add_lead(message: Message):
     try:
         group_id = message.chat.id
         leads = int(message.text.lstrip('+'))
+        print(f'Plus{leads} pushed')
         update_leads(group_id, leads)  # Update leads count in the database
         await message.answer("Лиды учтены!")  # Uncomment if a response is needed
         export_google.main()  # Export data to Google Sheets
@@ -141,6 +184,7 @@ async def add_lead(message: Message):
 
 @router.message(lambda message: message.text and message.text.lower() == "финиш")
 async def finish_work(message: Message):
+    print('Finish pushed')
     try:
         user_id = message.from_user.id
         end_time = datetime.utcnow()  # Время окончания работы

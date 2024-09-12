@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 from app.database.models import UserInfo
 from app.database.requests import engine, end_work
 
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

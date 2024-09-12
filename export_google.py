@@ -6,16 +6,10 @@ from sqlalchemy.sql import select
 from datetime import datetime
 from gspread_formatting import set_frozen, format_cell_range, CellFormat, TextFormat, Color, Borders, Border
 from gspread_formatting.dataframe import format_with_dataframe
-from config import JSON_FILE
+from config import JSON_FILE, GOOGLE_SHEET, MONTHS_EN_TO_RU, DATABASE_URL
 
-# Маппинг месяцев с английского на русский
-MONTHS_EN_TO_RU = {
-    'January': 'Январь', 'February': 'Февраль', 'March': 'Март', 'April': 'Апрель', 'May': 'Май', 'June': 'Июнь',
-    'July': 'Июль', 'August': 'Август', 'September': 'Сентябрь', 'October': 'Октябрь', 'November': 'Ноябрь', 'December': 'Декабрь'
-}
 
 # Setup database connection
-DATABASE_URL = 'sqlite:///database.db'
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 session = Session()
@@ -92,7 +86,7 @@ def format_data_for_sheet(user_data):
 
 def update_main_sheet():
     client = authorize_google_sheets()
-    spreadsheet = client.open("Стата Контролер")
+    spreadsheet = client.open(GOOGLE_SHEET)
     worksheet = spreadsheet.worksheet('Основная страница')
 
     # Установить текст в ячейке A1
@@ -158,7 +152,7 @@ def update_main_sheet():
                         "endIndex": 1     # Второй столбец 'B'
                     },
                     "properties": {
-                        "pixelSize": 125
+                        "pixelSize": 200
                     },
                     "fields": "pixelSize"
                 }
@@ -190,7 +184,7 @@ def update_main_sheet():
 # Функция для обновления таблицы
 def update_sheet(real_name, data):
     client = authorize_google_sheets()
-    spreadsheet = client.open("Стата Контролер")
+    spreadsheet = client.open(GOOGLE_SHEET)
     worksheet = spreadsheet.worksheet(real_name)
 
     try:
@@ -204,7 +198,9 @@ def update_sheet(real_name, data):
 
         # Обновление диапазона ячеек
         worksheet.update(range_name=data_range, values=data)
-        print(f"Data updated for {real_name}: {data}")
+        #print(f"Data updated for {real_name}: {data}")
+        print(f"Sheet updated for {real_name}")
+
 
         # Установка ширины первого столбца в 150 пикселей через batch_update
         sheet_id = worksheet._properties['sheetId']
@@ -256,7 +252,7 @@ def update_sheet(real_name, data):
             print(f"Merged cells with the same text in range {merge_range}")
 
         # Заморозить строки с заголовками для удобства
-        print("Freezing header rows")
+        #print("Freezing header rows")
         set_frozen(worksheet, cols=1)
 
         # Применение цветового форматирования и выравнивание по центру для заголовков
@@ -336,4 +332,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-#TODO 1) первая строчка, отступ 2) выравние везде по центру
