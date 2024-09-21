@@ -8,7 +8,7 @@ from config import JSON_FILE, DATABASE_URL
 
 
 # Определение часового пояса для GMT+8
-bali_tz = timezone(timedelta(hours=11))
+bali_tz = timezone(timedelta(hours=8))
 
 # Создание движка и сессии
 engine = create_engine(DATABASE_URL)
