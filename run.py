@@ -1,11 +1,31 @@
 import logging
 import asyncio
-import app.scheduler
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.fsm.storage.memory import MemoryStorage
+from fastapi import FastAPI
+from pydantic import BaseModel
+import uvicorn
+from contextlib import asynccontextmanager
+
+from app.scheduler import scheduler, check_scheduler_status  # Обновленный импорт
 from config import API_TOKEN
 from app.handlers import router
+from app.database.requests import update_leads_from_crm
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+# Создание экземпляра приложения FastAPI
+#appi = FastAPI()
+
+
+
+# Модель данных для эндпоинта
+class LeadData(BaseModel):
+    chat_id: str
+    lead_count: int
+
 
 
 async def set_commands(bot: Bot):
@@ -15,18 +35,30 @@ async def set_commands(bot: Bot):
     ]
     await bot.set_my_commands(commands)
 
-async def main():
+@asynccontextmanager
+async def lifespan(appi: FastAPI):
+    # Код при старте приложения
+    logging.basicConfig(level=logging.INFO)
     bot = Bot(token=API_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
-    
     dp.include_router(router)
-    app.scheduler.check_scheduler_status()
+    check_scheduler_status()  # Обновленный вызов функции
     await set_commands(bot)
-    await dp.start_polling(bot)
+    asyncio.create_task(dp.start_polling(bot))
+    yield
+    # Код при завершении приложения (если нужно)
+
+appi = FastAPI(lifespan=lifespan)
+
+# Эндпоинт для получения данных
+@appi.post("/update_leads")
+async def update_leads(lead_data: LeadData):
+    chat_id = lead_data.chat_id
+    lead_count = lead_data.lead_count
+    logging.info(f'Получены данные: chat_id={chat_id}, lead_count={lead_count}')
+    # Выполните нужные действия с данными (например, обновление базы данных)
+    update_leads_from_crm(chat_id, lead_count)
+    return {"status": "success", "message": "Data received", "chat_id": chat_id, "lead_count": lead_count}
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    try: 
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print('Exit from bot.')
+    uvicorn.run("run:appi", host="0.0.0.0", port=4046)

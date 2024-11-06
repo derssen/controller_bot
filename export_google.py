@@ -5,7 +5,6 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import select
 from datetime import datetime
 from gspread_formatting import set_frozen, format_cell_range, CellFormat, TextFormat, Color, Borders, Border
-from gspread_formatting.dataframe import format_with_dataframe
 from config import JSON_FILE, GOOGLE_SHEET, MONTHS_EN_TO_RU, DATABASE_URL
 
 
@@ -41,25 +40,38 @@ def get_user_name(user_id):
         return result[1]  # 'real_name' is the second column in the result
     return None
 
+# Функция для преобразования индекса столбца в буквенное обозначение
+def colnum_string(n):
+    """Преобразует числовой индекс столбца (нумерация с 0) в буквенное обозначение (например, 0 -> 'A', 26 -> 'AA')"""
+    string = ""
+    n += 1  # Переход к 1-based нумерации
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        string = chr(65 + remainder) + string
+    return string
+
 def format_data_for_sheet(user_data):
     date_to_data = {}
+    date_idx = 2
     start_time_idx = 3
     end_time_idx = 4
     leads_idx = 5
 
     # Group data by date
     for record in user_data:
+        date = record[date_idx]
         start_time = record[start_time_idx]
         end_time = record[end_time_idx] if record[end_time_idx] else None
         leads = record[leads_idx]
 
-        if isinstance(start_time, datetime):
-            date_str = start_time.strftime('%d/%m')  # Format date as DD/MM
-            month_str = start_time.strftime('%B')    # Format month as full month name
-            month_str_ru = MONTHS_EN_TO_RU.get(month_str, month_str)  # Translate month to Russian
-        else:
-            print(f"Unexpected start_time type: {type(start_time)}")
-            continue
+        # If start_time is None, use date as the start time (only date part, without time)
+        if start_time is None:
+            start_time = date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Formatting date strings
+        date_str = date.strftime('%d/%m')
+        month_str = date.strftime('%B')
+        month_str_ru = MONTHS_EN_TO_RU.get(month_str, month_str)  # Translate month to Russian
         
         if date_str not in date_to_data:
             date_to_data[date_str] = {'start_times': [], 'finish_times': [], 'leads': 0, 'month': month_str_ru}
@@ -77,11 +89,17 @@ def format_data_for_sheet(user_data):
     months = [date_to_data[date]['month'] for date in sorted_dates]
     data = [["Месяц"] + months,
             ["Дата"] + sorted_dates,
-            ["Время старта"] + [min(date_to_data[date]['start_times']).strftime('%H:%M') for date in sorted_dates],
-            ["Время финиша"] + [max(date_to_data[date]['finish_times']).strftime('%H:%M') if date_to_data[date]['finish_times'] else '' for date in sorted_dates],
+            ["Время старта"] + [
+                '' if min(date_to_data[date]['start_times']).strftime('%H:%M') == '00:00' else min(date_to_data[date]['start_times']).strftime('%H:%M')
+                for date in sorted_dates
+            ],
+            ["Время финиша"] + [
+                max(date_to_data[date]['finish_times']).strftime('%H:%M') if date_to_data[date]['finish_times'] and max(date_to_data[date]['finish_times']).strftime('%H:%M') != '00:00' else ''
+                for date in sorted_dates
+            ],
             ["Лидов получено"] + [date_to_data[date]['leads'] for date in sorted_dates],
             ["Лидов за месяц итого", leads_total]]
-
+    print(f'Данные {data}')
     return data
 
 def update_main_sheet():
@@ -193,12 +211,12 @@ def update_sheet(real_name, data):
             raise ValueError("Invalid data format")
         num_rows = len(data)
         num_cols = max(len(row) for row in data)
-        last_col = chr(ord('A') + num_cols - 1)
+        last_col = colnum_string(num_cols - 1)  # Используем функцию colnum_string
+
         data_range = f'A2:{last_col}{num_rows + 1}'
 
         # Обновление диапазона ячеек
         worksheet.update(range_name=data_range, values=data)
-        #print(f"Data updated for {real_name}: {data}")
         print(f"Sheet updated for {real_name}")
 
 
@@ -232,17 +250,22 @@ def update_sheet(real_name, data):
 
         # Объединение ячеек с одинаковым текстом в строке 2
         start_col = None
-        for i in range(1, num_cols):  # начинаем с 1, так как 0 - это первая колонка
-            if data[0][i] == data[0][i-1]:  # если текст в ячейке равен предыдущему
+        for i in range(1, num_cols):
+            if data[0][i] == data[0][i - 1]:
                 if start_col is None:
-                    start_col = chr(ord('A') + i - 1)
+                    start_col = colnum_string(i - 1)
             else:
                 if start_col:
-                    end_col = chr(ord('A') + i - 1)
+                    end_col = colnum_string(i - 1)
                     merge_range = f'{start_col}2:{end_col}2'
                     worksheet.merge_cells(merge_range)
                     print(f"Merged cells with the same text in range {merge_range}")
                     start_col = None
+        if start_col:
+            end_col = colnum_string(num_cols - 1)
+            merge_range = f'{start_col}2:{end_col}2'
+            worksheet.merge_cells(merge_range)
+            print(f"Merged cells with the same text in range {merge_range}")
 
         # Если объединение должно происходить в последнем столбце
         if start_col:
@@ -316,6 +339,11 @@ def update_sheet(real_name, data):
         print(f"An error occurred: {e}")
 
 
+def update_one_sheet(user_id):
+    real_name = get_user_name(user_id)
+    user_data = fetch_user_data(user_id)
+    data = format_data_for_sheet(user_data)
+    update_sheet(real_name, data)
 
 def main():
     user_ids = session.query(user_info_table.c.user_id).distinct().all()

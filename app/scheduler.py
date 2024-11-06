@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 from app.database.models import UserInfo
-from app.database.requests import engine, end_work
+from app.database.requests import engine, end_work, send_daily_leads_to_group
 from export_google import get_user_name, fetch_user_data, format_data_for_sheet, update_sheet
 
 
@@ -94,6 +94,7 @@ def check_scheduler_status():
 
 # Настройка планировщика
 scheduler = BackgroundScheduler(timezone=bali_tz)
+scheduler.add_job(send_daily_leads_to_group, 'cron', hour=18, minute=22)
 scheduler.add_job(end_work_automatically, 'cron', hour=23, minute=59)
 #scheduler.add_job(end_work_automatically, 'interval', minutes=1)
 

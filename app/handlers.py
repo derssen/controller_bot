@@ -6,7 +6,8 @@ from app.database.requests import (
     add_general_info, add_user_info, get_random_phrase, 
     update_leads, end_work, session, add_admin_to_db,
     add_head_to_db, update_group_id, get_heads_ids,
-    del_manager_from_db, del_head_from_db, show_state_list
+    del_manager_from_db, del_head_from_db, show_state_list,
+    update_google_sheet
 )
 from app.database.models import UserInfo, AddManagerState, AddHeadState, DelManagerState, DelHeadState
 from config import ALLOWED_IDS
@@ -24,6 +25,14 @@ async def cmd_start(message: Message):
     if message.from_user.id in ALLOWED_IDS:  
         await message.answer('Привет! Вы можете добавить менеджера.', 
                          reply_markup=kb.start)
+    else:
+        await message.answer("Привет! \n К сожалению у вас нету никаких прав в этом мире)")
+
+# Команда /help
+@router.message(Command(commands=['help']))
+async def cmd_help(message: Message):
+    if message.from_user.id in ALLOWED_IDS:  
+        await message.answer('Тут будет справка, но пока она не нужна.')
     else:
         await message.answer("Привет! \n К сожалению у вас нету никаких прав в этом мире)")
 
@@ -58,6 +67,11 @@ async def add_admin(message: Message):
     await message.answer(heads)
     await message.answer(managers)
 
+# Обработка нажатия на кнопку "Обновить Google Sheet"
+@router.message(F.text == "Обновить Google Sheet", F.from_user.id.in_(ALLOWED_IDS))
+async def update_google(message: Message):
+    update_google_sheet()
+    await message.answer("Обновлено!")
 
 
 # Менеджер: Обработка пересланного сообщения или ввода user_id
@@ -153,13 +167,13 @@ async def start_work(message: Message):
             return
         group_id = message.chat.id
         general_id = add_general_info()
-        add_user_info(user_id, general_id, start_time=datetime.utcnow(), started=True)
+        add_user_info(user_id, general_id, start_time=datetime.now(), started=True)
         group_id = message.chat.id
         update_group_id(user_id, group_id)
         phrase = get_random_phrase()
         await message.answer(phrase)
         await message.answer("Продуктивного дня!")
-        export_google.main()  # Экспорт данных в Google Sheets
+        export_google.update_one_sheet(message.from_user.id)  # Экспорт данных в Google Sheets
 
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
@@ -175,7 +189,7 @@ async def add_lead(message: Message):
         print(f'Plus{leads} pushed')
         update_leads(group_id, leads)  # Update leads count in the database
         await message.answer("Лиды учтены!")  # Uncomment if a response is needed
-        export_google.main()  # Export data to Google Sheets
+        export_google.update_one_sheet(message.from_user.id)  # Export data to Google Sheets
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
             print("Bot was blocked by the user.")
@@ -187,7 +201,7 @@ async def finish_work(message: Message):
     print('Finish pushed')
     try:
         user_id = message.from_user.id
-        end_time = datetime.utcnow()  # Время окончания работы
+        end_time = datetime.now()  # Время окончания работы
         
         # Вызов функции end_work для записи времени окончания работы в базу данных
         daily_message, total_message = end_work(user_id, end_time)
@@ -197,7 +211,7 @@ async def finish_work(message: Message):
         #await message.answer(total_message)
 
         await message.answer("Спасибо за работу и приятного отдыха!")
-        export_google.main()  # Экспорт данных в Google Sheets
+        export_google.update_one_sheet(message.from_user.id)  # Экспорт данных в Google Sheets
 
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
