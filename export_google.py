@@ -1,4 +1,5 @@
 import gspread
+import time
 from oauth2client.service_account import ServiceAccountCredentials
 from sqlalchemy import create_engine, Table, MetaData
 from sqlalchemy.orm import sessionmaker
@@ -351,10 +352,15 @@ def main():
     for user_id_tuple in user_ids:
         user_id = user_id_tuple[0]
         real_name = get_user_name(user_id)
+        
         if real_name:
             user_data = fetch_user_data(user_id)
             data = format_data_for_sheet(user_data)
             update_sheet(real_name, data)
+        
+        # Add a 1-minute delay before processing the next user
+        time.sleep(60)  # Pause for 60 seconds (1 minute)
+    
     update_main_sheet()
 
 if __name__ == "__main__":
