@@ -6,8 +6,7 @@ from app.database.requests import (
     add_general_info, add_user_info, get_random_phrase, 
     update_leads, end_work, session, add_admin_to_db,
     add_head_to_db, update_group_id, get_heads_ids,
-    del_manager_from_db, del_head_from_db, show_state_list,
-    update_google_sheet
+    del_manager_from_db, del_head_from_db, show_state_list
 )
 from app.database.models import UserInfo, AddManagerState, AddHeadState, DelManagerState, DelHeadState
 from config import ALLOWED_IDS
@@ -70,7 +69,8 @@ async def add_admin(message: Message):
 # Обработка нажатия на кнопку "Обновить Google Sheet"
 @router.message(F.text == "Обновить Google Sheet", F.from_user.id.in_(ALLOWED_IDS))
 async def update_google(message: Message):
-    update_google_sheet()
+    await message.answer("Обновление запущено, пожалуйста подождите...")
+    await export_google.main()
     await message.answer("Обновлено!")
 
 

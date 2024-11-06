@@ -1,5 +1,8 @@
 import gspread
 import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 from oauth2client.service_account import ServiceAccountCredentials
 from sqlalchemy import create_engine, Table, MetaData
 from sqlalchemy.orm import sessionmaker
@@ -8,6 +11,8 @@ from datetime import datetime
 from gspread_formatting import set_frozen, format_cell_range, CellFormat, TextFormat, Color, Borders, Border
 from config import JSON_FILE, GOOGLE_SHEET, MONTHS_EN_TO_RU, DATABASE_URL
 
+
+executor = ThreadPoolExecutor()
 
 # Setup database connection
 engine = create_engine(DATABASE_URL)
@@ -346,7 +351,21 @@ def update_one_sheet(user_id):
     data = format_data_for_sheet(user_data)
     update_sheet(real_name, data)
 
-def main():
+
+# Modify update_sheet and update_main_sheet to run synchronously in an executor
+async def async_update_sheet(real_name, data):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(executor, update_sheet, real_name, data)
+
+async def async_update_main_sheet():
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(executor, update_main_sheet)
+
+
+
+
+# Main async function to update all sheets
+async def main():
     user_ids = session.query(user_info_table.c.user_id).distinct().all()
     
     for user_id_tuple in user_ids:
@@ -356,12 +375,12 @@ def main():
         if real_name:
             user_data = fetch_user_data(user_id)
             data = format_data_for_sheet(user_data)
-            update_sheet(real_name, data)
+            await async_update_sheet(real_name, data)
         
         # Add a 1-minute delay before processing the next user
-        time.sleep(60)  # Pause for 60 seconds (1 minute)
+        await asyncio.sleep(60)  # Async sleep for 60 seconds
     
-    update_main_sheet()
+    await async_update_main_sheet()
 
 if __name__ == "__main__":
     main()

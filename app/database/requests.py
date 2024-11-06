@@ -1,14 +1,14 @@
 import gspread
+import requests
+import export_google 
 from oauth2client.service_account import ServiceAccountCredentials
-from sqlalchemy import create_engine, func, select, update, insert, Table, MetaData
+from sqlalchemy import create_engine, func, select, update, insert, Table, MetaData, and_
 from sqlalchemy.orm import sessionmaker, Session
 from app.database.models import MotivationalPhrases, UserInfo, GeneralInfo
-from datetime import datetime, timedelta, timezone
-from config import JSON_FILE, DATABASE_URL
+from datetime import datetime, timedelta, timezone, date
+from config import JSON_FILE, DATABASE_URL, GOOGLE_SHEET, API_TOKEN
 
 
-# Определение часового пояса для GMT+8
-bali_tz = timezone(timedelta(hours=8))
 
 # Создание движка и сессии
 engine = create_engine(DATABASE_URL)
@@ -49,6 +49,7 @@ def get_random_phrase():
         return "Нет мотивационных фраз в базе данных."
     return phrase_record.phrase
 
+
 def check_start_work(user_id):
     """
     Проверить, начал ли пользователь работу.
@@ -60,6 +61,7 @@ def check_start_work(user_id):
         UserInfo: Информация о пользователе или None, если работа не начата.
     """
     return session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
+
 
 def add_general_info():
     try:
@@ -76,8 +78,6 @@ def add_general_info():
 
 def add_user_info(user_id, general_id, start_time, started=False):
     try:
-        # Конвертируем время начала в часовой пояс Bali
-        start_time = start_time.astimezone(bali_tz)
         user_info = UserInfo(user_id=user_id, general_id=general_id, start_time=start_time, started=started)
         session.add(user_info)
         session.commit()
@@ -88,6 +88,7 @@ def add_user_info(user_id, general_id, start_time, started=False):
 
 
 def update_leads(chat_id, leads):
+    print(f'Сработала функция update leads, chat_id={chat_id}, leads={leads}')
     try:
         # Fetch the real_user_id from the names table using chat_id (group_id)
         name_entry = session.query(names_table).filter_by(group_id=chat_id).first()
@@ -108,8 +109,7 @@ def update_leads(chat_id, leads):
         else:
             # If no active session exists, create a new entry
             general_id = add_general_info()
-            start_time = datetime.utcnow().astimezone(bali_tz)  # Set the start time to the current time in Bali timezone
-            
+            start_time = datetime.now()
             # Adding a new user info entry with the leads count
             add_user_info(real_user_id, general_id, start_time, started=True)
             user_info = UserInfo(user_id=real_user_id, general_id=general_id, leads=leads, start_time=start_time, started=True)
@@ -122,22 +122,104 @@ def update_leads(chat_id, leads):
     finally:
         session.close()
 
+def send_time_to_telegram(start_time):
+    print(f'Сработала функция send_time_to_telegram, start_time={start_time}')
+    try:
+        # Получаем текущее время сервера
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        # Формируем текст сообщения
+        message = f"Текущее время сервера: {current_time}, \n Время старта: {start_time}"
+        print(message)
+        
+        # URL для отправки сообщения через Telegram API
+        url = f"https://api.telegram.org/bot7408947547:AAG4_hbMdwp7cWAMnTaP3ZIZyn1cRRxC2Ig/sendMessage"
+        chat_id = '-4540710078'
+        # Параметры запроса
+        payload = {
+            "chat_id": chat_id,
+            "text": message
+        }
+        
+        # Отправка сообщения
+        response = requests.post(url, data=payload)
+        
+        # Проверка успешности запроса
+        if response.status_code == 200:
+            print("Сообщение успешно отправлено!")
+        else:
+            print(f"Ошибка отправки: {response.status_code}")
+    except Exception as e:
+        print(f"send_time_to_telegram - An error occurred: {e}")        
+
+def update_leads_from_crm(chat_id, leads):
+    print(f'Сработала функция update_leads_from_crm, chat_id={chat_id}, leads={leads}')
+    
+    try:
+        # Fetch the real_user_id from the names table using chat_id (group_id)
+        #print("Пытаюсь получить real_user_id для chat_id из таблицы names...")
+        name_entry = session.query(names_table).filter_by(group_id=chat_id).first()
+        #print(f'Тип chat_id: {type(chat_id)}')
+        
+        if not name_entry:
+            print("Не удалось найти пользователя с указанным chat_id.")
+            return
+        
+        real_user_id = name_entry.real_user_id
+        #print(f'Найден real_user_id: {real_user_id}')
+        
+        # Check if there's a user entry for the current date
+        #print("Проверяю наличие записи пользователя на текущую дату в UserInfo...")
+        today = date.today()
+        user = session.query(UserInfo).filter_by(user_id=real_user_id, date=today).first()
+        
+        if user:
+            # If an entry for today exists, update the leads
+         #   print(f'Найдена запись пользователя на текущую дату: {user.id}, текущие лиды: {user.leads}')
+            user.leads += leads
+          #  print(f'Обновляю лиды: {user.leads}')
+            session.commit()
+           # print("Лиды успешно обновлены.")
+        else:
+            # If no entry for today exists, create a new entry
+            #print("Запись на текущую дату не найдена, создаю новую запись.")
+            general_id = add_general_info()
+            #print(f'Создан новый general_id: {general_id}')
+            
+            # Adding a new user info entry with today's date, leads count, and start/end time as None
+            user_info = UserInfo(user_id=real_user_id, general_id=general_id, leads=leads, date=today, start_time=None, end_time=None, started=True)
+            session.add(user_info)
+            session.commit()
+         #   print("Новая запись пользователя добавлена в UserInfo.")
+        
+        print('Лиды добавлены в БД через вебхук, запускается отрисовка таблицы.')
+        export_google.update_one_sheet(real_user_id)
+        #print("Таблица обновлена в Google Sheets.")
+    
+    except Exception as e:
+        session.rollback()
+        print(f"Ошибка при обновлении лидов: {e}")
+    
+    finally:
+        print("Закрытие сессии...")
+        session.close()
+
+
+
 
 def end_work(user_id, end_time):
+    print(f'Сработала функция end_work, user_id={user_id}, end_time={end_time}')
     try:
         user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
     
         if user:
-            # Конвертируем время окончания в часовой пояс Bali
-            end_time = end_time.astimezone(bali_tz)
             print(f"Setting end_time for user {user_id} to {end_time}")
             
             user.end_time = end_time
             session.commit()
             print(f"End time successfully recorded for user {user_id}")
 
-            # Конвертируем время начала в часовой пояс Bali
-            start_time = user.start_time.astimezone(bali_tz)
+            start_time = user.start_time
             work_duration = end_time - start_time
             print('---start end', start_time, end_time)
             print('==========duration', work_duration)
@@ -151,9 +233,8 @@ def end_work(user_id, end_time):
 
             for record in all_records:
                 if record.end_time:
-                    # Конвертируем время начала и окончания в часовой пояс Bali
-                    record_start_time = record.start_time.astimezone(bali_tz)
-                    record_end_time = record.end_time.astimezone(bali_tz)
+                    record_start_time = record.start_time
+                    record_end_time = record.end_time
                     duration = record_end_time - record_start_time
                     total_duration += duration
                     total_leads += record.leads
@@ -171,8 +252,6 @@ def end_work(user_id, end_time):
         session.rollback()
         print(f"Произошла ошибка при завершении работы: {e}")
         return f"Произошла ошибка при завершении работы: {e}", ""
-
-
 
 
 def add_admin_to_db(user_id, user_name):
@@ -258,6 +337,7 @@ def del_head_from_db(user_id):
     except Exception as e:
         print(f"Не удалось удалить руководителя: {e}")
 
+
 def add_head_to_db(user_id, user_name):
     try:
         # Создаем сессию
@@ -324,7 +404,7 @@ def authorize_google_sheets():
 
 def update_sheet(real_name):
     client = authorize_google_sheets()
-    spreadsheet = client.open("Стата Контролер")
+    spreadsheet = client.open(GOOGLE_SHEET)
 
     try:
         worksheet = spreadsheet.worksheet(real_name)
@@ -360,3 +440,51 @@ def show_state_list():
         output_managers = f"Менеджеры:\n{formatted_managers}"
         # Print the result
     return output_heads, output_managers
+
+
+def send_daily_leads_to_group():
+    """
+    Calculate today's leads for each user and send the total to their respective group chat.
+    """
+    try:
+        # Fetch all users from the names table
+        users = session.query(names_table).all()
+        
+        today = datetime.now().date()
+
+        for user in users:
+            # Check if the user has a valid group_id
+            if not user.group_id:
+                print(f"No group ID found for user {user.real_name} (ID: {user.real_user_id}). Skipping.")
+                continue
+
+            # Calculate today's leads for the user
+            leads_today = session.query(func.sum(UserInfo.leads)).filter(
+                and_(
+                    UserInfo.user_id == user.real_user_id,
+                    func.date(UserInfo.date) == today
+                )
+            ).scalar()
+
+            leads_today = leads_today or 0  # Set to 0 if no leads found
+
+            # Prepare the message
+            message = f"Сегодня {today.strftime('%Y-%m-%d')} у пользователя {user.real_name} закрыто {leads_today} лида(ов)."
+
+            # Send the message to the group chat via Telegram API
+            url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
+            payload = {
+            #    "chat_id": user.group_id,
+                "chat_id": '-4540710078',
+                "text": message
+            }
+            
+            response = requests.post(url, data=payload)
+            
+            # Check if the message was sent successfully
+            if response.status_code == 200:
+                print(f"Message sent successfully to group {user.group_id} for user {user.real_name}!")
+            else:
+                print(f"Failed to send message to group {user.group_id} for user {user.real_name}: {response.status_code}, {response.text}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
