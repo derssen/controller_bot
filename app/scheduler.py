@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 from app.database.models import UserInfo
 from app.database.requests import engine, end_work, send_daily_leads_to_group
-from export_google import get_user_name, fetch_user_data, format_data_for_sheet, update_sheet
+#from export_google import get_user_name, fetch_user_data, format_data_for_sheet, update_sheet
 
 
 # Настройка логирования
@@ -44,15 +44,7 @@ def end_work_automatically():
 
         session.commit()
 
-        # Если есть пользователи для экспорта, выполняем экспорт в Google таблицу
-        if users_for_export:
-            for user in users_for_export:
-                real_name = get_user_name(user.user_id)  # Получаем имя пользователя для Google Sheets
-                if real_name:
-                    user_data = fetch_user_data(user.user_id)  # Получаем данные для этого пользователя
-                    formatted_data = format_data_for_sheet(user_data)  # Форматируем данные для Google Sheets
-                    update_sheet(real_name, formatted_data)  # Обновляем лист в Google Sheets для пользователя
-            logging.info(f"Данные экспортированы для {len(users_for_export)} пользователей.")
+
 
     except Exception as e:
         session.rollback()
@@ -67,7 +59,7 @@ async def send_message_to_user(user_id, message):
         await message.answer('Тут будет ваша статистика')
 #        daily_message, total_message = end_work(user_id, end_time)
  #       await message.answer(daily_message)
-  #      await message.answer(total_message)'''
+  #      await message.answer(total_message)
         print(f"Сообщение отправлено пользователю {user_id}: {message}")
     except Exception as e:
         print(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
@@ -94,7 +86,7 @@ def check_scheduler_status():
 
 # Настройка планировщика
 scheduler = BackgroundScheduler(timezone=bali_tz)
-scheduler.add_job(send_daily_leads_to_group, 'cron', hour=18, minute=22)
+#scheduler.add_job(send_daily_leads_to_group, 'cron', hour=18, minute=22)
 scheduler.add_job(end_work_automatically, 'cron', hour=23, minute=59)
 #scheduler.add_job(end_work_automatically, 'interval', minutes=1)
 

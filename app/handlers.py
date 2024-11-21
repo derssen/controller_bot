@@ -162,7 +162,7 @@ async def start_work(message: Message):
         
         # Проверка, не началась ли работа уже ранее
         user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
-        if user and user.started:
+        if user and user.started and user.user_id != '457118082':
             await message.answer("Вы уже начали работу!")
             return
         group_id = message.chat.id

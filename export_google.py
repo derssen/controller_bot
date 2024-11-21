@@ -8,8 +8,25 @@ from sqlalchemy import create_engine, Table, MetaData
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import select
 from datetime import datetime
-from gspread_formatting import set_frozen, format_cell_range, CellFormat, TextFormat, Color, Borders, Border
+from gspread_formatting import (
+    format_cell_range, CellFormat, TextFormat, Color, Borders, Border
+)
 from config import JSON_FILE, GOOGLE_SHEET, MONTHS_EN_TO_RU, DATABASE_URL
+
+MONTHS_RU_ORDER = {
+    'Январь': 1,
+    'Февраль': 2,
+    'Март': 3,
+    'Апрель': 4,
+    'Май': 5,
+    'Июнь': 6,
+    'Июль': 7,
+    'Август': 8,
+    'Сентябрь': 9,
+    'Октябрь': 10,
+    'Ноябрь': 11,
+    'Декабрь': 12
+}
 
 
 executor = ThreadPoolExecutor()
@@ -34,354 +51,813 @@ def authorize_google_sheets():
 def fetch_user_data(user_id):
     query = select(user_info_table).where(user_info_table.c.user_id == user_id)
     user_data = session.execute(query).fetchall()
-    #for i in user_data:
-    #    print(f"Fetched user data: {i}")
     return user_data
 
 def get_user_name(user_id):
     query = select(names_table).where(names_table.c.real_user_id == user_id)
     result = session.execute(query).fetchone()
-    #print(f"Fetched user name: {result[1] if result else 'None'}")
     if result:
         return result[1]  # 'real_name' is the second column in the result
     return None
 
-# Функция для преобразования индекса столбца в буквенное обозначение
-def colnum_string(n):
-    """Преобразует числовой индекс столбца (нумерация с 0) в буквенное обозначение (например, 0 -> 'A', 26 -> 'AA')"""
-    string = ""
-    n += 1  # Переход к 1-based нумерации
-    while n > 0:
-        n, remainder = divmod(n - 1, 26)
-        string = chr(65 + remainder) + string
-    return string
-
+# Function to format data into a tabular format
 def format_data_for_sheet(user_data):
-    date_to_data = {}
-    date_idx = 2
-    start_time_idx = 3
-    end_time_idx = 4
-    leads_idx = 5
-
-    # Group data by date
+    formatted_data = []
     for record in user_data:
-        date = record[date_idx]
-        start_time = record[start_time_idx]
-        end_time = record[end_time_idx] if record[end_time_idx] else None
-        leads = record[leads_idx]
+        date = record[2]  # Assuming date is at index 2
+        start_time = record[3]
+        end_time = record[4]
+        leads = record[5]
 
-        # If start_time is None, use date as the start time (only date part, without time)
-        if start_time is None:
-            start_time = date.replace(hour=0, minute=0, second=0, microsecond=0)
-
-        # Formatting date strings
-        date_str = date.strftime('%d/%m')
+        # Format date and times
+        date_str = date.strftime('%d/%m/%Y')
         month_str = date.strftime('%B')
         month_str_ru = MONTHS_EN_TO_RU.get(month_str, month_str)  # Translate month to Russian
-        
-        if date_str not in date_to_data:
-            date_to_data[date_str] = {'start_times': [], 'finish_times': [], 'leads': 0, 'month': month_str_ru}
-        
-        date_to_data[date_str]['start_times'].append(start_time)
-        if end_time:
-            date_to_data[date_str]['finish_times'].append(end_time)
-        date_to_data[date_str]['leads'] += leads
-    
-    # Sort dates, prioritizing the month, and then the day
-    sorted_dates = sorted(date_to_data.keys(), key=lambda d: (datetime.strptime(d, '%d/%m').month, datetime.strptime(d, '%d/%m').day))
-    leads_total = sum([date_to_data[date]['leads'] for date in sorted_dates])
+        start_time_str = start_time.strftime('%H:%M') if start_time else ''
+        end_time_str = end_time.strftime('%H:%M') if end_time else ''
 
-    # Adding month row above date row
-    months = [date_to_data[date]['month'] for date in sorted_dates]
-    data = [["Месяц"] + months,
-            ["Дата"] + sorted_dates,
-            ["Время старта"] + [
-                '' if min(date_to_data[date]['start_times']).strftime('%H:%M') == '00:00' else min(date_to_data[date]['start_times']).strftime('%H:%M')
-                for date in sorted_dates
-            ],
-            ["Время финиша"] + [
-                max(date_to_data[date]['finish_times']).strftime('%H:%M') if date_to_data[date]['finish_times'] and max(date_to_data[date]['finish_times']).strftime('%H:%M') != '00:00' else ''
-                for date in sorted_dates
-            ],
-            ["Лидов получено"] + [date_to_data[date]['leads'] for date in sorted_dates],
-            ["Лидов за месяц итого", leads_total]]
-    print(f'Данные {data}')
-    return data
+        formatted_data.append([
+            month_str_ru,
+            date_str,
+            start_time_str,
+            end_time_str,
+            leads
+        ])
+    return formatted_data
 
-def update_main_sheet():
+def execute_with_retry(func, retries=5, initial_delay=60, delay_on_quota=True):
+    for attempt in range(retries):
+        try:
+            func()
+            break  # If successful, exit the loop
+        except gspread.exceptions.APIError as e:
+            status = e.response.status_code
+            if status == 429:
+                print(f"Quota exceeded. Waiting for {initial_delay} seconds before retrying...")
+                time.sleep(initial_delay)
+                if delay_on_quota:
+                    initial_delay *= 2  # Exponential backoff
+            else:
+                print(f"An API error occurred: {e}")
+                raise
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+            raise
+    else:
+        print("Max retries exceeded.")
+        raise Exception("Failed to execute function after retries.")
+
+
+def update_hidden_data_sheet(all_data):
     client = authorize_google_sheets()
     spreadsheet = client.open(GOOGLE_SHEET)
-    worksheet = spreadsheet.worksheet('Основная страница')
 
-    # Установить текст в ячейке A1
-    worksheet.update('A1', [["Общая информация по менеджерам"]])
-
-    # Получить всех пользователей и их общее количество лидов
-    user_leads = {}
-    user_ids = session.query(user_info_table.c.user_id).distinct().all()
-    
-    for user_id_tuple in user_ids:
-        user_id = user_id_tuple[0]
-        real_name = get_user_name(user_id)
-        if real_name:
-            user_data = fetch_user_data(user_id)
-            total_leads = sum(record[5] for record in user_data)  # Предполагается, что количество лидов в 7-й колонке
-            user_leads[real_name] = total_leads
-    
-    # Подготовить данные для Google Sheets
-    data = [["Менеджер", "Количество лидов"]] + [[real_name, total_leads] for real_name, total_leads in user_leads.items()]
-
-    # Обновить лист начиная с ячейки A2
+    # Create or select the hidden data sheet
     try:
-        worksheet.update('A2', data)
-        
-        # Форматирование заголовков
-        header_format_A1 = CellFormat(
-            backgroundColor=Color(0.678, 0.847, 0.902),  # Голубой цвет
-            textFormat=TextFormat(fontSize=12, bold=True)
-        )
-        format_cell_range(worksheet, 'A1', header_format_A1)
+        data_sheet = spreadsheet.worksheet('Data')
+    except gspread.exceptions.WorksheetNotFound:
+        data_sheet = spreadsheet.add_worksheet(title='Data', rows="1000", cols="10")
+        # Hide the sheet
+        data_sheet.hide()
 
-        header_format_A2_B2 = CellFormat(
-            backgroundColor=Color(0.8, 1, 0.8),  # Светло-зеленый цвет для заголовков
-            textFormat=TextFormat(bold=True)
-        )
-        format_cell_range(worksheet, 'A2:B2', header_format_A2_B2)
+    # Prepare headers
+    headers = ['Manager', 'Month', 'Date', 'Start Time', 'End Time', 'Leads', 'Year']
 
-        # Объединение ячеек A1 и B1
-        worksheet.merge_cells('A1:B1')
+    # Clear existing data and update
+    execute_with_retry(lambda: data_sheet.clear())
 
-        # Применение формата границ ко всем ячейкам
-        border_format = CellFormat(
-            borders=Borders(
-                top=Border('SOLID', width=1),
-                bottom=Border('SOLID', width=1),
-                left=Border('SOLID', width=1),
-                right=Border('SOLID', width=1)
+    # Process data to remove spaces and ensure real empty cells
+    data_with_year = []
+    for row in all_data:
+        # Add year to each data row
+        date_str = row[2]  # Assuming date is at index 2
+        date_obj = datetime.strptime(date_str, '%d/%m/%Y')
+        year = date_obj.year
+
+        # Replace any "empty" spaces with real empty strings
+        cleaned_row = [cell.strip() if isinstance(cell, str) else cell for cell in row]
+        data_with_year.append(cleaned_row + [str(year)])
+
+    # Update the sheet with cleaned data
+    execute_with_retry(lambda: data_sheet.update([headers] + data_with_year))
+
+
+
+def update_manager_sheet(manager_name, months, years):
+    client = authorize_google_sheets()
+    spreadsheet = client.open(GOOGLE_SHEET)
+
+    # Создаём или выбираем лист менеджера
+    try:
+        manager_sheet = spreadsheet.worksheet(manager_name)
+    except gspread.exceptions.WorksheetNotFound:
+        print(f"Worksheet '{manager_name}' not found. Creating new worksheet.")
+        def add_worksheet():
+            spreadsheet.add_worksheet(title=manager_name, rows="1000", cols="26")
+        execute_with_retry(add_worksheet, retries=5, initial_delay=60)
+        manager_sheet = spreadsheet.worksheet(manager_name)
+
+    # Очищаем лист менеджера
+    execute_with_retry(lambda: manager_sheet.clear())
+
+    # Устанавливаем имя менеджера в A1
+    execute_with_retry(lambda: manager_sheet.update([[manager_name]], 'A1'))
+
+    # Определяем текущий месяц и год
+    current_datetime = datetime.now()
+    current_month_en = current_datetime.strftime('%B')  # Название месяца на английском
+    current_year = str(current_datetime.year)
+
+    # Переводим текущий месяц на русский
+    current_month_ru = MONTHS_EN_TO_RU.get(current_month_en, current_month_en)
+
+    # Приводим месяцы к нижнему регистру для сравнения
+    months_lower = [m.lower() for m in months]
+
+    # Проверяем, есть ли данные для текущего месяца и года
+    if current_month_ru.lower() in months_lower:
+        default_month = current_month_ru.capitalize()
+    else:
+        default_month = months[-1].capitalize() if months else ''
+
+    if current_year in years:
+        default_year = current_year
+    else:
+        default_year = years[-1] if years else ''
+
+    # Устанавливаем значения по умолчанию в B2 и D2
+    execute_with_retry(lambda: manager_sheet.update([[default_month]], 'B2'))
+    execute_with_retry(lambda: manager_sheet.update([[default_year]], 'D2'))
+
+    # Создаём список месяцев с заглавной буквы для выпадающего списка
+    months_capitalized = [month.capitalize() for month in months]
+
+    # Устанавливаем проверку данных в B2 и D2 с списком месяцев и годов
+    sheet_id = manager_sheet._properties['sheetId']
+    requests = [
+        {
+            'setDataValidation': {
+                'range': {
+                    'sheetId': sheet_id,
+                    'startRowIndex': 1,    # Row 2
+                    'endRowIndex': 2,      # Row 3
+                    'startColumnIndex': 1, # Column B
+                    'endColumnIndex': 2    # Column C
+                },
+                'rule': {
+                    'condition': {
+                        'type': 'ONE_OF_LIST',
+                        'values': [{'userEnteredValue': month} for month in months_capitalized]
+                    },
+                    'showCustomUi': True
+                }
+            }
+        },
+        {
+            'setDataValidation': {
+                'range': {
+                    'sheetId': sheet_id,
+                    'startRowIndex': 1,    # Row 2
+                    'endRowIndex': 2,
+                    'startColumnIndex': 3, # Column D
+                    'endColumnIndex': 4    # Column E
+                },
+                'rule': {
+                    'condition': {
+                        'type': 'ONE_OF_LIST',
+                        'values': [{'userEnteredValue': str(year)} for year in years]
+                    },
+                    'showCustomUi': True
+                }
+            }
+        }
+    ]
+    body = {'requests': requests}
+    execute_with_retry(lambda: spreadsheet.batch_update(body))
+
+    # Устанавливаем метки в A2:A6
+    labels = [['Месяц'], ['Дата'], ['Время работы'], ['Лидов получено'], ['Лидов за месяц итого']]
+    execute_with_retry(lambda: manager_sheet.update(labels, 'A2:A6'))
+
+    # Формула для даты (B3)
+    date_formula = '''=IFERROR(
+  TRANSPOSE(
+    UNIQUE(
+      FILTER(Data!C2:C,
+        (TRIM(Data!A2:A)=TRIM($A$1)) *
+        (LOWER(TRIM(Data!B2:B))=LOWER(TRIM($B$2))) *
+        (TRIM(Data!G2:G)=TRIM($D$2))
+      )
+    )
+  ),
+  "Нет данных"
+)'''
+    execute_with_retry(lambda: manager_sheet.update([[date_formula]], 'B3', value_input_option='USER_ENTERED'))
+
+    # Обновлённая формула для "Время работы" (B4)
+    working_time_formula = '''=ARRAYFORMULA(
+        IF(
+            ISBLANK(B3:ZZ3),
+            "",
+            MAP(B3:ZZ3,
+            LAMBDA(date,
+                IF(
+                ISBLANK(date),
+                "",
+                IFERROR(
+                    IF(
+                    COUNTA(FILTER(
+                        Data!D2:D,
+                        (TRIM(Data!A2:A) = TRIM($A$1)) *
+                        (LOWER(TRIM(Data!B2:B)) = LOWER(TRIM($B$2))) *
+                        (TRIM(Data!G2:G) = TRIM($D$2)) *
+                        (Data!C2:C = date)
+                    )) = 0,
+                    "н/д",
+                    LET(
+                        start_end,
+                        JOIN(CHAR(10),
+                        FILTER(
+                            IF(LEN(TRIM(Data!D2:D)) = 0, "н/д", Data!D2:D) & "-" &
+                            IF(LEN(TRIM(Data!E2:E)) = 0, "н/д", Data!E2:E),
+                            (TRIM(Data!A2:A) = TRIM($A$1)) *
+                            (LOWER(TRIM(Data!B2:B)) = LOWER(TRIM($B$2))) *
+                            (TRIM(Data!G2:G) = TRIM($D$2)) *
+                            (Data!C2:C = date)
+                        )
+                        ),
+                        IF(
+                        start_end = "н/д-н/д",
+                        "н/д за день",
+                        start_end
+                        )
+                    )
+                    ),
+                    "н/д"
+                )
+                )
+            )
             )
         )
-        last_col = 'B'
-        num_rows = len(data) + 1  # +1, так как начинается с A2
-        format_cell_range(worksheet, f'A2:{last_col}{num_rows}', border_format)
+        )
+        '''
+    execute_with_retry(lambda: manager_sheet.update([[working_time_formula]], 'B4', value_input_option='USER_ENTERED'))
 
-        # Настройка ширины колонок
-        sheet_id = worksheet._properties['sheetId']
-        requests = [
-            {
-                "updateDimensionProperties": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "COLUMNS",
-                        "startIndex": 0,  # Первый столбец 'A'
-                        "endIndex": 1     # Второй столбец 'B'
+    # Формула для "Лидов получено" (B5)
+    leads_formula = '''=ARRAYFORMULA(
+  IF(
+    ISBLANK(B3:ZZ3),
+    "",
+    MAP(B3:ZZ3,
+      LAMBDA(date,
+        IF(
+          ISBLANK(date),
+          "",
+          IFERROR(
+            SUM(
+              FILTER(
+                Data!F2:F,
+                (TRIM(Data!A2:A)=TRIM($A$1)) *
+                (LOWER(TRIM(Data!B2:B))=LOWER(TRIM($B$2))) *
+                (TRIM(Data!G2:G)=TRIM($D$2)) *
+                (Data!C2:C=date)
+              )
+            ),
+            0
+          )
+        )
+      )
+    )
+  )
+)'''
+    execute_with_retry(lambda: manager_sheet.update([[leads_formula]], 'B5', value_input_option='USER_ENTERED'))
+
+    # Формула для "Лидов за месяц итого" (B6)
+    total_leads_formula = '''=IFERROR(
+  SUM(
+    FILTER(Data!F2:F,
+      (TRIM(Data!A2:A)=TRIM($A$1)) *
+      (LOWER(TRIM(Data!B2:B))=LOWER(TRIM($B$2))) *
+      (TRIM(Data!G2:G)=TRIM($D$2))
+    )
+  ),
+  0
+)'''
+    execute_with_retry(lambda: manager_sheet.update([[total_leads_formula]], 'B6', value_input_option='USER_ENTERED'))
+
+    # Применяем форматирование
+    apply_formatting(manager_sheet)
+
+    # Добавляем задержку между обновлениями листов менеджеров
+    time.sleep(60)  # Настройте при необходимости
+
+
+def apply_formatting(worksheet):
+    # Set column widths
+    sheet_id = worksheet._properties['sheetId']
+    last_col_index = 26  # Adjust as needed
+
+    requests = [
+        # Set width for column A to 200 pixels
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 0,  # Column A
+                    "endIndex": 1     # Up to Column B
+                },
+                "properties": {
+                    "pixelSize": 200
+                },
+                "fields": "pixelSize"
+            }
+        },
+        # Set width for columns B onwards
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 1,  # Column B
+                    "endIndex": last_col_index
+                },
+                "properties": {
+                    "pixelSize": 100  # Adjust as needed
+                },
+                "fields": "pixelSize"
+            }
+        },
+    ]
+
+    # Format cell A1 (Manager's Name)
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 0,
+                "endRowIndex": 1,
+                "startColumnIndex": 0,
+                "endColumnIndex": 1,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {
+                        "red": 0.678,
+                        "green": 0.847,
+                        "blue": 0.902
                     },
-                    "properties": {
-                        "pixelSize": 200
-                    },
-                    "fields": "pixelSize"
+                    "textFormat": {
+                        "fontSize": 12,
+                        "bold": True
+                    }
                 }
             },
-            {
-                "updateDimensionProperties": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "COLUMNS",
-                        "startIndex": 1,  # Второй столбец 'B'
-                        "endIndex": 2     # Третий столбец (C)
+            "fields": "userEnteredFormat(backgroundColor,textFormat)"
+        }
+    })
+
+    # Format labels in A2:A7 (including A7)
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,  # Row 2
+                "endRowIndex": 6,    # Row 7
+                "startColumnIndex": 0,
+                "endColumnIndex": 1,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {
+                        "red": 0.8,
+                        "green": 1,
+                        "blue": 0.8
                     },
-                    "properties": {
-                        "pixelSize": 175
-                    },
-                    "fields": "pixelSize"
+                    "textFormat": {
+                        "bold": True
+                    }
                 }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat)"
+        }
+    })
+
+    # Merge cells B2 and C2 for Month selection
+    requests.append({
+        "mergeCells": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,    # Row 2
+                "endRowIndex": 2,      # Row 3
+                "startColumnIndex": 1, # Column B
+                "endColumnIndex": 3    # Column C
+            },
+            "mergeType": "MERGE_ALL"
+        }
+    })
+
+    # Merge cells D2 and E2 for Year selection
+    requests.append({
+        "mergeCells": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,    # Row 2
+                "endRowIndex": 2,      # Row 3
+                "startColumnIndex": 3, # Column D
+                "endColumnIndex": 5    # Column E
+            },
+            "mergeType": "MERGE_ALL"
+        }
+    })
+
+    # Format merged cell B2:C2 (Month Selection)
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,    # Row 2
+                "endRowIndex": 2,      # Row 3
+                "startColumnIndex": 1, # Column B
+                "endColumnIndex": 3    # Column C
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {
+                        "red": 0.851,
+                        "green": 0.918,
+                        "blue": 0.827
+                    },
+                    "textFormat": {
+                        "fontSize": 12,
+                        "bold": True
+                    }
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat)"
+        }
+    })
+
+    # Format merged cell D2:E2 (Year Selection)
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,    # Row 2
+                "endRowIndex": 2,      # Row 3
+                "startColumnIndex": 3, # Column D
+                "endColumnIndex": 5    # Column E
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {
+                        "red": 0.851,
+                        "green": 0.918,
+                        "blue": 0.827
+                    },
+                    "textFormat": {
+                        "fontSize": 12,
+                        "bold": True
+                    }
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat)"
+        }
+    })
+
+    # Center alignment from B2 onwards
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,  # Row 2
+                "endRowIndex": 1000, # Adjust as needed
+                "startColumnIndex": 1,  # Column B
+                "endColumnIndex": last_col_index,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "horizontalAlignment": "CENTER",
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "WRAP"
+                }
+            },
+            "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment,wrapStrategy)"
+        }
+    })
+
+    # Apply background colors to rows 3-7
+    row_colors = {
+        '3': (0.851, 0.918, 0.827),  # Light green for "Дата"
+        '4': (0.918, 0.82, 0.863),   # Light pink for "Время старта"
+        '5': (0.918, 0.82, 0.863),   # Light pink for "Время финиша"
+        '6': (0.757, 0.482, 0.627),  # Dark pink for "Лидов за месяц итого"
+    }
+    for row_num_str, color_tuple in row_colors.items():
+        row_num = int(row_num_str) - 1  # Zero-indexed
+        color = {'red': color_tuple[0], 'green': color_tuple[1], 'blue': color_tuple[2]}
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": row_num,
+                    "endRowIndex": row_num + 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": last_col_index
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": color
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor)"
             }
-        ]
-        spreadsheet.batch_update({"requests": requests})
+        })
 
-        print("Main sheet updated successfully.")
-    except gspread.exceptions.APIError as e:
-        print(f"API Error: {e}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    # Apply borders to the data range
+    num_rows = 6
+    requests.append({
+        "updateBorders": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,  # Row 2
+                "endRowIndex": num_rows,
+                "startColumnIndex": 0,
+                "endColumnIndex": last_col_index
+            },
+            "top": {"style": "SOLID", "width": 1},
+            "bottom": {"style": "SOLID", "width": 1},
+            "left": {"style": "SOLID", "width": 1},
+            "right": {"style": "SOLID", "width": 1},
+            "innerHorizontal": {"style": "SOLID", "width": 1},
+            "innerVertical": {"style": "SOLID", "width": 1},
+        }
+    })
+
+    # Execute all formatting requests in a single batch_update
+    execute_with_retry(lambda: worksheet.spreadsheet.batch_update({'requests': requests}))
+
+    # Apply formats that cannot be batched, like freezing panes
+    worksheet.freeze(rows=0, cols=1)  # Freeze first two columns
 
 
-# Функция для обновления таблицы
-def update_sheet(real_name, data):
+
+def update_main_sheet(manager_names):
     client = authorize_google_sheets()
     spreadsheet = client.open(GOOGLE_SHEET)
-    worksheet = spreadsheet.worksheet(real_name)
 
+    # Create or select the main sheet named 'Основная страница'
     try:
-        # Проверка данных
-        if not data or not isinstance(data, list) or not all(isinstance(row, list) for row in data):
-            raise ValueError("Invalid data format")
-        num_rows = len(data)
-        num_cols = max(len(row) for row in data)
-        last_col = colnum_string(num_cols - 1)  # Используем функцию colnum_string
+        main_sheet = spreadsheet.worksheet('Основная страница')
+    except gspread.exceptions.WorksheetNotFound:
+        print("Worksheet 'Основная страница' not found. Creating new worksheet.")
+        # Wrap the add_worksheet call with execute_with_retry
+        def add_worksheet():
+            spreadsheet.add_worksheet(title='Основная страница', rows="1000", cols="10")
+        execute_with_retry(add_worksheet, retries=5, initial_delay=60)
+        # After adding the worksheet, get a reference to it
+        main_sheet = spreadsheet.worksheet('Основная страница')
 
-        data_range = f'A2:{last_col}{num_rows + 1}'
+    # Clear the main sheet
+    execute_with_retry(lambda: main_sheet.clear())
 
-        # Обновление диапазона ячеек
-        worksheet.update(range_name=data_range, values=data)
-        print(f"Sheet updated for {real_name}")
-
-
-        # Установка ширины первого столбца в 150 пикселей через batch_update
-        sheet_id = worksheet._properties['sheetId']
-        requests = [
-            {
-                "updateDimensionProperties": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "COLUMNS",
-                        "startIndex": 0,  # Индекс 0 означает первый столбец 'A'
-                        "endIndex": 1     # До второго столбца 'B' (но не включая)
-                    },
-                    "properties": {
-                        "pixelSize": 185
-                    },
-                    "fields": "pixelSize"
-                }
-            }
-        ]
-        spreadsheet.batch_update({"requests": requests})
-
-        # Закрашивание ячейки A1 в голубой цвет, текст 12, жирный
-        header_format_A1 = CellFormat(
-            backgroundColor=Color(0.678, 0.847, 0.902),  # Голубой цвет
-            textFormat=TextFormat(fontSize=12, bold=True)
-        )
-        format_cell_range(worksheet, 'A1', header_format_A1)
-
-
-        # Объединение ячеек с одинаковым текстом в строке 2
-        start_col = None
-        for i in range(1, num_cols):
-            if data[0][i] == data[0][i - 1]:
-                if start_col is None:
-                    start_col = colnum_string(i - 1)
-            else:
-                if start_col:
-                    end_col = colnum_string(i - 1)
-                    merge_range = f'{start_col}2:{end_col}2'
-                    worksheet.merge_cells(merge_range)
-                    print(f"Merged cells with the same text in range {merge_range}")
-                    start_col = None
-        if start_col:
-            end_col = colnum_string(num_cols - 1)
-            merge_range = f'{start_col}2:{end_col}2'
-            worksheet.merge_cells(merge_range)
-            print(f"Merged cells with the same text in range {merge_range}")
-
-        # Если объединение должно происходить в последнем столбце
-        if start_col:
-            end_col = chr(ord('A') + num_cols - 1)
-            merge_range = f'{start_col}2:{end_col}2'
-            worksheet.merge_cells(merge_range)
-            print(f"Merged cells with the same text in range {merge_range}")
-
-        # Заморозить строки с заголовками для удобства
-        #print("Freezing header rows")
-        set_frozen(worksheet, cols=1)
-
-        # Применение цветового форматирования и выравнивание по центру для заголовков
-        header_format = CellFormat(
-            backgroundColor=Color(0.8, 1, 0.8),  # Светло-зеленый цвет для заголовков
-            textFormat=TextFormat(bold=True),
-            horizontalAlignment='CENTER',
-            borders=Borders(
-                top=Border('SOLID', width=1),
-                bottom=Border('SOLID', width=1),
-                left=Border('SOLID', width=1),
-                right=Border('SOLID', width=1)
-            )
-        )
-        header_range = f'A2:{last_col}2'
-        #print(f"Applying header formatting to range {header_range}")
-        format_cell_range(worksheet, header_range, header_format)
-
-        # Применение выравнивания по центру для всех ячеек кроме первого столбца
-        center_alignment_format = CellFormat(horizontalAlignment='CENTER')
-        center_alignment_range = f'B3:{last_col}{num_rows + 1}'
-        format_cell_range(worksheet, center_alignment_range, center_alignment_format)
-
-        # Форматирование ячейки "Лидов за месяц итого" и её значения
-        total_leads_format = CellFormat(
-            textFormat=TextFormat(fontSize=11, bold=True),
-        )
-        format_cell_range(worksheet, f'A{num_rows + 1}:{last_col}{num_rows + 1}', total_leads_format)
-
-        # Форматирование строк с временем старта и финиша, лидов и итогов
-        row_formats = {
-            '3': CellFormat(backgroundColor=Color(0.851, 0.918, 0.827)),  # Светло-зеленый для времени старта
-            '4': CellFormat(backgroundColor=Color(0.918, 0.82, 0.863)),  # Тёмно-розовый для времени финиша
-            '5': CellFormat(backgroundColor=Color(0.918, 0.82, 0.863)),  # Тёмно-розовый для лидов получено
-            '6': CellFormat(backgroundColor=Color(0.918, 0.82, 0.863)),  # Тёмно-розовый для итогового количества лидов
-            '7': CellFormat(backgroundColor=Color(0.757, 0.482, 0.627)),  # Тёмно-розовый для итогового количества лидов
+    # Set up header in A1 and merge A1:B1
+    execute_with_retry(lambda: main_sheet.update([['Общая информация по менеджерам']], 'A1'))
+    sheet_id = main_sheet._properties['sheetId']
+    merge_request = {
+        "mergeCells": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 0,   # Row 1
+                "endRowIndex": 1,     # Row 2
+                "startColumnIndex": 0,  # Column A
+                "endColumnIndex": 2    # Column B
+            },
+            "mergeType": "MERGE_ALL"
         }
-        
-        for row, fmt in row_formats.items():
-            row_range = f'A{row}:{last_col}{row}'
-            #print(f"Applying row formatting to range {row_range}")
-            format_cell_range(worksheet, row_range, fmt)
+    }
 
-        # Применение формата границ ко всем ячейкам
-        border_format = CellFormat(
-            borders=Borders(
-                top=Border('SOLID', width=1),
-                bottom=Border('SOLID', width=1),
-                left=Border('SOLID', width=1),
-                right=Border('SOLID', width=1)
-            )
-        )
-        border_range = f'A2:{last_col}{num_rows + 1}'
-        #print(f"Applying border formatting to range {border_range}")
-        format_cell_range(worksheet, border_range, border_format)
+    # Apply specified header_format_A1 to cell A1
+    header_format_A1 = CellFormat(
+        backgroundColor=Color(0.678, 0.847, 0.902),  # Голубой цвет (light blue)
+        textFormat=TextFormat(fontSize=12, bold=True)
+    )
+    execute_with_retry(lambda: format_cell_range(main_sheet, 'A1', header_format_A1))
 
-        print(f"Sheet for {real_name} updated successfully.")
-    except gspread.exceptions.APIError as e:
-        print(f"API Error: {e}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    # Set up headers in A2:B2
+    execute_with_retry(lambda: main_sheet.update([['Менеджер', 'Количество лидов']], 'A2:B2'))
+
+    # Write manager names in column A starting from A3
+    data = [[manager_name] for manager_name in manager_names]
+    execute_with_retry(lambda: main_sheet.update(data, 'A3'))
+
+    # Set formula in column B to calculate total leads from Data sheet
+    num_rows = len(manager_names) + 2  # Including header rows
+    formulas = []
+    for idx in range(len(manager_names)):
+        row = idx + 3  # Starting from row 3
+        formula = f"=SUMIF(Data!A:A, A{row}, Data!F:F)"
+        formulas.append([formula])
+
+    execute_with_retry(lambda: main_sheet.update(formulas, f'B3', value_input_option='USER_ENTERED'))
+
+    # Prepare formatting requests
+    requests = [merge_request]
+
+    # Adjust column widths
+    requests += [
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 0,  # Column A
+                    "endIndex": 1     # Up to Column B
+                },
+                "properties": {
+                    "pixelSize": 200
+                },
+                "fields": "pixelSize"
+            }
+        },
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 1,  # Column B
+                    "endIndex": 2     # Up to Column C
+                },
+                "properties": {
+                    "pixelSize": 150
+                },
+                "fields": "pixelSize"
+            }
+        },
+    ]
+
+    # Set background color for all cells with text (from A1 to B{num_rows})
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 0,          # Include header
+                "endRowIndex": num_rows,     # Last row with data
+                "startColumnIndex": 0,
+                "endColumnIndex": 2,         # Columns A and B
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {
+                        "red": 0.8,
+                        "green": 1,
+                        "blue": 0.8
+                    }
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor)"
+        }
+    })
+
+    # Align column A to the left
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 2,      # From row 3 onwards
+                "endRowIndex": num_rows,
+                "startColumnIndex": 0,   # Column A
+                "endColumnIndex": 1
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "horizontalAlignment": "LEFT"
+                }
+            },
+            "fields": "userEnteredFormat(horizontalAlignment)"
+        }
+    })
+
+    # Center alignment for column B
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 2,      # From row 3 onwards
+                "endRowIndex": num_rows,
+                "startColumnIndex": 1,   # Column B
+                "endColumnIndex": 2
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "horizontalAlignment": "CENTER"
+                }
+            },
+            "fields": "userEnteredFormat(horizontalAlignment)"
+        }
+    })
+
+    # Apply borders to the data range
+    requests.append({
+        "updateBorders": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,  # Row 2
+                "endRowIndex": num_rows,
+                "startColumnIndex": 0,
+                "endColumnIndex": 2
+            },
+            "top": {"style": "SOLID", "width": 1},
+            "bottom": {"style": "SOLID", "width": 1},
+            "left": {"style": "SOLID", "width": 1},
+            "right": {"style": "SOLID", "width": 1},
+            "innerHorizontal": {"style": "SOLID", "width": 1},
+            "innerVertical": {"style": "SOLID", "width": 1},
+        }
+    })
+
+    # Execute all formatting requests in a single batch_update
+    execute_with_retry(lambda: spreadsheet.batch_update({'requests': requests}))
+
+    # Freeze the first two rows
+    main_sheet.freeze(rows=2)
 
 
-def update_one_sheet(user_id):
-    real_name = get_user_name(user_id)
-    user_data = fetch_user_data(user_id)
-    data = format_data_for_sheet(user_data)
-    update_sheet(real_name, data)
 
-
-# Modify update_sheet and update_main_sheet to run synchronously in an executor
-async def async_update_sheet(real_name, data):
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(executor, update_sheet, real_name, data)
-
-async def async_update_main_sheet():
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(executor, update_main_sheet)
-
-
-
-
-# Main async function to update all sheets
 async def main():
     user_ids = session.query(user_info_table.c.user_id).distinct().all()
-    
+
+    # Collect all data and write to hidden data sheet
+    all_data = []
+    manager_months = {}  # To keep track of months for each manager
+    manager_years = {}   # To keep track of years for each manager
+    manager_names = []
+
     for user_id_tuple in user_ids:
         user_id = user_id_tuple[0]
         real_name = get_user_name(user_id)
-        
         if real_name:
             user_data = fetch_user_data(user_id)
             data = format_data_for_sheet(user_data)
-            await async_update_sheet(real_name, data)
-        
-        # Add a 1-minute delay before processing the next user
-        await asyncio.sleep(60)  # Async sleep for 60 seconds
+            if data:
+                for row in data:
+                    all_data.append([real_name] + row)
+                # Collect unique months and years for the manager
+                months = [row[0].strip() for row in data]  # row[0] is month in Russian
+                unique_months = sorted(set(months), key=lambda m: MONTHS_RU_ORDER.get(m, 0))
+                manager_months[real_name] = unique_months
+
+                years = [row[1].split('/')[-1] for row in data]  # Extract year from date
+                unique_years = sorted(set(years))
+                manager_years[real_name] = unique_years
+
+                manager_names.append(real_name)
+
+    # Update the hidden data sheet with all users' data
+    update_hidden_data_sheet(all_data)
+
+    # Update each manager's sheet
+    for manager_name in manager_names:
+        months = manager_months.get(manager_name, [])
+        years = manager_years.get(manager_name, [])
+        update_manager_sheet(manager_name, months, years)
+        # Add a delay between manager updates
+        time.sleep(1)  # Adjust as needed
+
+    # Update the main sheet
+    update_main_sheet(manager_names)
+
+def update_one_sheet(manager_name):
+    manager_name = get_user_name(manager_name)
+    user_ids = session.query(user_info_table.c.user_id).distinct().all()
+
+    all_data = []
+    manager_months = {}  # To keep track of months for each manager
+    manager_years = {}   # To keep track of years for each manager
+    manager_names = []
+
+    for user_id_tuple in user_ids:
+        user_id = user_id_tuple[0]
+        real_name = get_user_name(user_id)
+        if real_name:
+            user_data = fetch_user_data(user_id)
+            data = format_data_for_sheet(user_data)
+            if data:
+                for row in data:
+                    all_data.append([real_name] + row)
+                # Collect unique months and years for the manager
+                months = [row[0].strip() for row in data]  # row[0] is month in Russian
+                unique_months = sorted(set(months), key=lambda m: MONTHS_RU_ORDER.get(m, 0))
+                manager_months[real_name] = unique_months
+
+                years = [row[1].split('/')[-1] for row in data]  # Extract year from date
+                unique_years = sorted(set(years))
+                manager_years[real_name] = unique_years
+
+                manager_names.append(real_name)
+    update_manager_sheet(manager_name, months, years)
     
-    await async_update_main_sheet()
+    
 
 if __name__ == "__main__":
-    main()
-
+    asyncio.run(main())
