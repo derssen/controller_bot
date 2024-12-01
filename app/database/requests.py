@@ -193,7 +193,7 @@ def update_leads_from_crm(chat_id, leads):
         
         # Обновление Google Sheets
         print('Лиды добавлены в БД через вебхук, запускается отрисовка таблицы.')
-        #export_google.update_one_sheet(real_user_id)
+        export_google.update_user_data()
     
     except Exception as e:
         session.rollback()
