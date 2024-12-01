@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 from app.database.models import UserInfo
 from app.database.requests import engine, end_work, send_daily_leads_to_group
+import export_google 
 #from export_google import get_user_name, fetch_user_data, format_data_for_sheet, update_sheet
 
 
@@ -65,6 +66,13 @@ async def send_message_to_user(user_id, message):
         print(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
 
 
+async def update_google_sheet():
+    try:
+        export_google.main()
+        print(f"Запущено обновление Google Sheet")
+    except Exception as e:
+        print(f"Ошибка при новлении Google Sheet: {e}")
+
 def check_scheduler_status():
     """
     Проверить состояние планировщика и его заданий.
@@ -88,6 +96,7 @@ def check_scheduler_status():
 scheduler = BackgroundScheduler(timezone=bali_tz)
 #scheduler.add_job(send_daily_leads_to_group, 'cron', hour=18, minute=22)
 scheduler.add_job(end_work_automatically, 'cron', hour=23, minute=59)
+scheduler.add_job(update_google_sheet, 'cron', hour=1, minute=0)
 #scheduler.add_job(end_work_automatically, 'interval', minutes=1)
 
 # Запуск планировщика

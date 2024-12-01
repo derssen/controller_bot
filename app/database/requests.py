@@ -87,7 +87,7 @@ def add_user_info(user_id, general_id, start_time, started=False):
         print(f"Failed to add UserInfo: {e}")
 
 
-def update_leads(chat_id, leads):
+'''def update_leads(chat_id, leads):
     print(f'Сработала функция update leads, chat_id={chat_id}, leads={leads}')
     try:
         # Fetch the real_user_id from the names table using chat_id (group_id)
@@ -120,7 +120,7 @@ def update_leads(chat_id, leads):
         session.rollback()
         print(f"Ошибка при обновлении лидов: {e}")
     finally:
-        session.close()
+        session.close()'''
 
 def send_time_to_telegram(start_time):
     print(f'Сработала функция send_time_to_telegram, start_time={start_time}')
@@ -152,49 +152,48 @@ def send_time_to_telegram(start_time):
     except Exception as e:
         print(f"send_time_to_telegram - An error occurred: {e}")        
 
+
 def update_leads_from_crm(chat_id, leads):
     print(f'Сработала функция update_leads_from_crm, chat_id={chat_id}, leads={leads}')
     
     try:
-        # Fetch the real_user_id from the names table using chat_id (group_id)
-        #print("Пытаюсь получить real_user_id для chat_id из таблицы names...")
+        # Получаем real_user_id из таблицы names по chat_id (group_id)
         name_entry = session.query(names_table).filter_by(group_id=chat_id).first()
-        #print(f'Тип chat_id: {type(chat_id)}')
         
         if not name_entry:
             print("Не удалось найти пользователя с указанным chat_id.")
             return
         
         real_user_id = name_entry.real_user_id
-        #print(f'Найден real_user_id: {real_user_id}')
+        today = datetime.now()
         
-        # Check if there's a user entry for the current date
-        #print("Проверяю наличие записи пользователя на текущую дату в UserInfo...")
-        today = date.today()
-        user = session.query(UserInfo).filter_by(user_id=real_user_id, date=today).first()
+        # Проверяем наличие записи с текущей датой
+        user_info = session.query(UserInfo).filter_by(user_id=real_user_id, date=today).first()
         
-        if user:
-            # If an entry for today exists, update the leads
-         #   print(f'Найдена запись пользователя на текущую дату: {user.id}, текущие лиды: {user.leads}')
-            user.leads += leads
-          #  print(f'Обновляю лиды: {user.leads}')
+        if user_info:
+            # Обновляем количество лидов, если запись найдена
+            user_info.leads += leads
             session.commit()
-           # print("Лиды успешно обновлены.")
+            print(f"Обновлена запись для пользователя {real_user_id}: добавлено {leads} лидов.")
         else:
-            # If no entry for today exists, create a new entry
-            #print("Запись на текущую дату не найдена, создаю новую запись.")
+            # Создаём новую запись, если записи с текущей датой нет
             general_id = add_general_info()
-            #print(f'Создан новый general_id: {general_id}')
-            
-            # Adding a new user info entry with today's date, leads count, and start/end time as None
-            user_info = UserInfo(user_id=real_user_id, general_id=general_id, leads=leads, date=today, start_time=None, end_time=None, started=True)
-            session.add(user_info)
+            new_user_info = UserInfo(
+                user_id=real_user_id,
+                general_id=general_id,
+                leads=leads,
+                date=today,
+                start_time=None,
+                end_time=None,
+                started=True
+            )
+            session.add(new_user_info)
             session.commit()
-         #   print("Новая запись пользователя добавлена в UserInfo.")
+            print(f"Создана новая запись для пользователя {real_user_id} с {leads} лидами.")
         
+        # Обновление Google Sheets
         print('Лиды добавлены в БД через вебхук, запускается отрисовка таблицы.')
-        export_google.update_one_sheet(real_user_id)
-        #print("Таблица обновлена в Google Sheets.")
+        #export_google.update_one_sheet(real_user_id)
     
     except Exception as e:
         session.rollback()
@@ -203,8 +202,6 @@ def update_leads_from_crm(chat_id, leads):
     finally:
         print("Закрытие сессии...")
         session.close()
-
-
 
 
 def end_work(user_id, end_time):
@@ -254,26 +251,34 @@ def end_work(user_id, end_time):
         return f"Произошла ошибка при завершении работы: {e}", ""
 
 
-def add_admin_to_db(user_id, user_name):
+def add_admin_to_db(user_id, user_name, amocrm_id, language):
     try:
-        # Создаем сессию
         with Session() as session:
             # Проверяем, существует ли уже такой пользователь в базе
             result = session.execute(select(names_table.c.real_user_id).where(names_table.c.real_user_id == user_id)).fetchone()
 
             if result:
-                # Обновляем имя, если пользователь уже есть в базе
+                # Обновляем запись, если пользователь уже есть в базе
                 session.execute(
-                    names_table.update().where(names_table.c.real_user_id == user_id).values(real_name=user_name),
+                    names_table.update().where(names_table.c.real_user_id == user_id).values(
+                        real_name=user_name,
+                        amocrm_id=amocrm_id,
+                        language=language
+                    ),
                 )
-                print(f"Updated existing admin with user_id {user_id} to name: {user_name}")
+                print(f"Updated existing admin with user_id {user_id}: name: {user_name}, amocrm_id: {amocrm_id}, language: {language}")
             else:
                 # Вставляем нового пользователя
                 session.execute(
-                    names_table.insert().values(real_user_id=user_id, real_name=user_name)
+                    names_table.insert().values(
+                        real_user_id=user_id,
+                        real_name=user_name,
+                        amocrm_id=amocrm_id,
+                        language=language
+                    )
                 )
-                print(f"Added new admin with user_id {user_id} and name: {user_name}")
-            
+                print(f"Added new admin with user_id {user_id}, name: {user_name}, amocrm_id: {amocrm_id}, language: {language}")
+
             # Сохраняем изменения
             session.commit()
 
@@ -282,6 +287,7 @@ def add_admin_to_db(user_id, user_name):
             print(f"Worksheet '{user_name}' created.")
     except Exception as e:
         print(f"Failed to add manager: {e}")
+
 
 
 def del_manager_from_db(user_id):
@@ -426,20 +432,32 @@ def get_heads_ids():
 
 
 def show_state_list():
-    # Connect to the database
-    with Session() as session:
-        # Fetch the head names
-        head_names = session.execute(select(heads_table.c.head_name)).scalars().all()
-        # Fetch the manager names
-        manager_names = session.execute(select(names_table.c.real_name)).scalars().all()
-        # Format the names
-        formatted_heads = '\n'.join(head_names)
-        formatted_managers = '\n'.join(manager_names)
-        # Create the result string
-        output_heads = f"Руководители:\n{formatted_heads}"
-        output_managers = f"Менеджеры:\n{formatted_managers}"
-        # Print the result
-    return output_heads, output_managers
+    """
+    Извлекает и форматирует список руководителей и менеджеров из базы данных.
+    
+    Returns:
+        tuple: (строка с руководителями, строка с менеджерами).
+    """
+    try:
+        with Session() as session:
+            # Извлекаем имена руководителей
+            head_names = session.execute(select(heads_table.c.head_name)).scalars().all()
+            # Извлекаем имена менеджеров
+            manager_names = session.execute(select(names_table.c.real_name)).scalars().all()
+
+            # Форматируем списки
+            formatted_heads = '\n'.join(head_names) if head_names else "Нет руководителей."
+            formatted_managers = '\n'.join(manager_names) if manager_names else "Нет менеджеров."
+
+            # Создаём строки для вывода
+            output_heads = f"Руководители:\n{formatted_heads}"
+            output_managers = f"Менеджеры:\n{formatted_managers}"
+
+            return output_heads, output_managers
+    except Exception as e:
+        print(f"Ошибка при выполнении show_state_list: {e}")
+        return "Ошибка при извлечении руководителей.", "Ошибка при извлечении менеджеров."
+
 
 
 def send_daily_leads_to_group():

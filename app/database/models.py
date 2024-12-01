@@ -45,6 +45,8 @@ Base.metadata.create_all(engine)
 class AddManagerState(StatesGroup):
     waiting_for_user = State()
     waiting_for_name = State()
+    waiting_for_amocrm_id = State()
+    waiting_for_language = State()
 
 class AddHeadState(StatesGroup):
     waiting_for_user = State()

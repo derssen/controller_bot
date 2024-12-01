@@ -784,6 +784,39 @@ def update_main_sheet(manager_names):
 
 
 
+async def update_user_data():
+    print('Было запущено обновление даных страниц.')
+    user_ids = session.query(user_info_table.c.user_id).distinct().all()
+    # Collect all data and write to hidden data sheet
+    all_data = []
+    manager_months = {}  # To keep track of months for each manager
+    manager_years = {}   # To keep track of years for each manager
+    manager_names = []
+
+    for user_id_tuple in user_ids:
+        user_id = user_id_tuple[0]
+        real_name = get_user_name(user_id)
+        if real_name:
+            user_data = fetch_user_data(user_id)
+            data = format_data_for_sheet(user_data)
+            if data:
+                for row in data:
+                    all_data.append([real_name] + row)
+                # Collect unique months and years for the manager
+                months = [row[0].strip() for row in data]  # row[0] is month in Russian
+                unique_months = sorted(set(months), key=lambda m: MONTHS_RU_ORDER.get(m, 0))
+                manager_months[real_name] = unique_months
+
+                years = [row[1].split('/')[-1] for row in data]  # Extract year from date
+                unique_years = sorted(set(years))
+                manager_years[real_name] = unique_years
+
+                manager_names.append(real_name)
+
+    # Update the hidden data sheet with all users' data
+    update_hidden_data_sheet(all_data)
+    print('Было закончено обновление даных страниц.')
+
 async def main():
     user_ids = session.query(user_info_table.c.user_id).distinct().all()
 
@@ -815,6 +848,9 @@ async def main():
 
     # Update the hidden data sheet with all users' data
     update_hidden_data_sheet(all_data)
+    
+    # Update the main sheet
+    update_main_sheet(manager_names)
 
     # Update each manager's sheet
     for manager_name in manager_names:
@@ -822,10 +858,9 @@ async def main():
         years = manager_years.get(manager_name, [])
         update_manager_sheet(manager_name, months, years)
         # Add a delay between manager updates
-        time.sleep(1)  # Adjust as needed
+        time.sleep(60)  # Adjust as needed
 
-    # Update the main sheet
-    update_main_sheet(manager_names)
+    
 
 def update_one_sheet(manager_name):
     manager_name = get_user_name(manager_name)
