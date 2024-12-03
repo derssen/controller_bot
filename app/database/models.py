@@ -39,6 +39,11 @@ class MotivationalPhrases(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     phrase = Column(String, nullable=False)
 
+class MotivationalEngPhrases(Base):
+    __tablename__ = 'motivational_eng_phrases'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    phrase = Column(String, nullable=False)
 Base.metadata.create_all(engine)
 
 # Определение состояний для FSM

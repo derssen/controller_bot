@@ -1,13 +1,15 @@
 import gspread
+import logging
 import requests
 import export_google 
 from oauth2client.service_account import ServiceAccountCredentials
 from sqlalchemy import create_engine, func, select, update, insert, Table, MetaData, and_
 from sqlalchemy.orm import sessionmaker, Session
-from app.database.models import MotivationalPhrases, UserInfo, GeneralInfo
+from app.database.models import MotivationalPhrases, MotivationalEngPhrases, UserInfo, GeneralInfo
 from datetime import datetime, timedelta, timezone, date
 from config import JSON_FILE, DATABASE_URL, GOOGLE_SHEET, API_TOKEN
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 # Создание движка и сессии
@@ -50,6 +52,19 @@ def get_random_phrase():
     return phrase_record.phrase
 
 
+def get_eng_random_phrase():
+    """
+    Получить случайную мотивационную фразу из базы данных.
+    
+    Returns:
+        str: Мотивационная фраза или сообщение о том, что фразы отсутствуют.
+    """
+    phrase_record = session.query(MotivationalEngPhrases).order_by(func.random()).first()
+    if phrase_record is None:
+        return "Нет мотивационных фраз в базе данных."
+    return phrase_record.phrase
+
+
 def check_start_work(user_id):
     """
     Проверить, начал ли пользователь работу.
@@ -78,7 +93,7 @@ def add_general_info():
 
 def add_user_info(user_id, general_id, start_time, started=False):
     try:
-        user_info = UserInfo(user_id=user_id, general_id=general_id, start_time=start_time, started=started)
+        user_info = UserInfo(user_id=user_id, general_id=general_id, date=start_time, start_time=start_time, started=started)
         session.add(user_info)
         session.commit()
         print(f"Added UserInfo for user_id: {user_id} with general_id: {general_id}")
@@ -161,14 +176,25 @@ def update_leads_from_crm(chat_id, leads):
         name_entry = session.query(names_table).filter_by(group_id=chat_id).first()
         
         if not name_entry:
-            print("Не удалось найти пользователя с указанным chat_id.")
+            print(f"Не удалось найти пользователя с указанным chat_id: {chat_id}")
             return
-        
+
+        # Извлекаем real_user_id
         real_user_id = name_entry.real_user_id
-        today = datetime.now()
+        print(f"Найден real_user_id: {real_user_id} для chat_id: {chat_id}")
         
-        # Проверяем наличие записи с текущей датой
-        user_info = session.query(UserInfo).filter_by(user_id=real_user_id, date=today).first()
+        # Текущая дата
+        today = datetime.now().date()
+        print(f"Ищем запись для user_id={real_user_id} на дату {today}")
+        
+        # Проверяем наличие записи с текущей датой (сравнение только по дате)
+        user_info = session.query(UserInfo).filter(
+            and_(
+                UserInfo.user_id == real_user_id,
+                func.date(UserInfo.date) == today  # Сравниваем только дату
+            )
+        ).first()
+        print(f'Найдена запись UserInfo: {user_info}')
         
         if user_info:
             # Обновляем количество лидов, если запись найдена
@@ -182,14 +208,14 @@ def update_leads_from_crm(chat_id, leads):
                 user_id=real_user_id,
                 general_id=general_id,
                 leads=leads,
-                date=today,
+                date=datetime.now(),  # Сохраняем дату и время текущего момента
                 start_time=None,
                 end_time=None,
                 started=True
             )
             session.add(new_user_info)
             session.commit()
-            print(f"Создана новая запись для пользователя {real_user_id} с {leads} лидами.")
+            print(f"Создана новая запись для пользователя {real_user_id} с {leads} лидами. Время: {datetime.now()}")
         
         # Обновление Google Sheets
         print('Лиды добавлены в БД через вебхук, запускается отрисовка таблицы.')
@@ -204,14 +230,28 @@ def update_leads_from_crm(chat_id, leads):
         session.close()
 
 
+
+
 def end_work(user_id, end_time):
     print(f'Сработала функция end_work, user_id={user_id}, end_time={end_time}')
     try:
-        user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
-    
+        # Текущая дата
+        today = end_time.date()
+        print(f"Ищем первую запись с пустым end_time за {today}")
+
+        # Ищем первую запись с пустым end_time за текущий день
+        user = session.query(UserInfo).filter(
+            and_(
+                UserInfo.user_id == user_id,
+                UserInfo.end_time.is_(None),
+                func.date(UserInfo.start_time) == today  # Учитываем только дату
+            )
+        ).first()
+        
         if user:
             print(f"Setting end_time for user {user_id} to {end_time}")
             
+            # Устанавливаем end_time и сохраняем
             user.end_time = end_time
             session.commit()
             print(f"End time successfully recorded for user {user_id}")
@@ -243,12 +283,13 @@ def end_work(user_id, end_time):
 
             return daily_message, total_message
         else:
-            print(f"No active work found for user {user_id}")
-            return "Пользователь не найден.", ""
+            print(f"No active work found for user {user_id} on {today}")
+            return "Пользователь не найден или работа за сегодня уже завершена.", ""
     except Exception as e:
         session.rollback()
         print(f"Произошла ошибка при завершении работы: {e}")
         return f"Произошла ошибка при завершении работы: {e}", ""
+
 
 
 def add_admin_to_db(user_id, user_name, amocrm_id, language):
@@ -506,3 +547,26 @@ def send_daily_leads_to_group():
                 print(f"Failed to send message to group {user.group_id} for user {user.real_name}: {response.status_code}, {response.text}")
     except Exception as e:
         print(f"An error occurred: {e}")
+
+
+def get_language_by_chat_id(chat_id: int):
+    """
+    Получить значение language для заданного chat_id.
+    """
+    try:
+        with Session() as session:
+            # Ищем запись в таблице names по group_id (chat_id)
+            query = select(names_table.c.language).where(
+                names_table.c.group_id == chat_id
+            )
+            result = session.execute(query)
+            data = result.fetchone()
+            if data:
+                language = data[0]
+                return language  # Возвращаем значение language
+            else:
+                logging.info(f"No language found for chat_id {chat_id}")
+                return None
+    except Exception as e:
+        logging.info(f"Error fetching language for chat_id {chat_id}: {e}")
+        return None

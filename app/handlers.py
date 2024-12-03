@@ -6,13 +6,16 @@ from app.database.requests import (
     add_general_info, add_user_info, get_random_phrase, 
     end_work, session, add_admin_to_db,
     add_head_to_db, update_group_id, get_heads_ids,
-    del_manager_from_db, del_head_from_db, show_state_list
+    del_manager_from_db, del_head_from_db, show_state_list,
+    get_language_by_chat_id, get_eng_random_phrase
 )
 from app.database.models import UserInfo, AddManagerState, AddHeadState, DelManagerState, DelHeadState
 from config import ALLOWED_IDS
 from datetime import datetime
 import export_google 
 import app.keyboards as kb
+import logging 
+
 
 
 router = Router()
@@ -187,32 +190,43 @@ async def process_head_name(message: Message, state: FSMContext):
     await message.answer(f"Руководитель с именем {head_name} и user_id {user_id} был добавлен.")
     await state.clear()
 
-@router.message(lambda message: message.text and message.text.lower() == "старт")
+@router.message(lambda message: message.text and message.text.lower() in ["старт", "start"])
 async def start_work(message: Message):
     print('Start pushed')
     try:
         user_id = message.from_user.id
-        
+
         # Проверка, не началась ли работа уже ранее
-        user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
-        #if user and user.started and user.user_id != '457118082':
-        #    await message.answer("Вы уже начали работу!")
-        #    return
+        # user = session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
+        # if user and user.started and user.user_id != '457118082':
+        #     await message.answer("Вы уже начали работу!")
+        #     return
+
         group_id = message.chat.id
         general_id = add_general_info()
-        add_user_info(user_id, general_id, start_time=datetime.now(), started=True)
-        group_id = message.chat.id
+        start_time=datetime.now()
+        add_user_info(user_id, general_id, start_time, started=True)
+        
         update_group_id(user_id, group_id)
-        phrase = get_random_phrase()
+
+        language = get_language_by_chat_id(group_id)
+        if language == 'en':
+            phrase = get_eng_random_phrase()
+            text = "Have a productive day!"
+        else:
+            phrase = get_random_phrase()
+            text = "Продуктивного дня!"
+        logging.info(f'Юзеру {group_id} отправлено сообщение: {text}')
         await message.answer(phrase)
-        await message.answer("Продуктивного дня!")
-        export_google.update_one_sheet(message.from_user.id)  # Экспорт данных в Google Sheets
+        await message.answer(text)
+        await export_google.update_user_data()
 
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
             print("Bot was blocked by the user.")
         else:
             print(f"An error occurred: {e}")
+
 
 '''@router.message(lambda message: message.text and message.text.startswith("+") and message.from_user.id in heads_ids)
 async def add_lead(message: Message):
@@ -229,7 +243,7 @@ async def add_lead(message: Message):
         else:
             print(f"An error occurred: {e}")'''
 
-@router.message(lambda message: message.text and message.text.lower() == "финиш")
+@router.message(lambda message: message.text and message.text.lower() in ["финиш", "finish"])
 async def finish_work(message: Message):
     print('Finish pushed')
     try:
@@ -242,9 +256,13 @@ async def finish_work(message: Message):
         # Отправка сообщений пользователю
         #await message.answer(daily_message)
         #await message.answer(total_message)
-
-        await message.answer("Спасибо за работу и приятного отдыха!")
-        export_google.update_one_sheet(message.from_user.id)  # Экспорт данных в Google Sheets
+        language = get_language_by_chat_id(message.chat.id)
+        if language == 'en':
+            text = "Thank you for your work and have a pleasant rest!"
+        else:
+            text = "Спасибо за работу и приятного отдыха!"
+        await message.answer(text)
+        await export_google.update_user_data()
 
     except Exception as e:
         if 'bot was blocked by the user' in str(e):
