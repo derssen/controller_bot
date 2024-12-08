@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import sessionmaker
@@ -17,6 +18,7 @@ bali_tz = timezone(timedelta(hours=8))
 
 # Создание сессии для работы с базой данных
 Session = sessionmaker(bind=engine)
+
 
 def end_work_automatically():
     """
@@ -45,8 +47,6 @@ def end_work_automatically():
 
         session.commit()
 
-
-
     except Exception as e:
         session.rollback()
         logging.error(f"Произошла ошибка при автоматическом завершении работы: {e}")
@@ -66,12 +66,16 @@ async def send_message_to_user(user_id, message):
         print(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
 
 
+def update_google_sheet_wrapper():
+    asyncio.run(update_google_sheet())
+
 async def update_google_sheet():
     try:
-        export_google.main()
+        await export_google.main()
         print(f"Запущено обновление Google Sheet")
     except Exception as e:
         print(f"Ошибка при новлении Google Sheet: {e}")
+
 
 def check_scheduler_status():
     """
@@ -89,14 +93,14 @@ def check_scheduler_status():
             logging.info(f"Задание '{job.id}' запланировано на {job.next_run_time}.")
     else:
         logging.info("Нет запланированных заданий.")
-    
 
 
 # Настройка планировщика
 scheduler = BackgroundScheduler(timezone=bali_tz)
 #scheduler.add_job(send_daily_leads_to_group, 'cron', hour=18, minute=22)
 scheduler.add_job(end_work_automatically, 'cron', hour=23, minute=59)
-scheduler.add_job(update_google_sheet, 'cron', hour=1, minute=0)
+#scheduler.add_job(update_google_sheet_wrapper, 'cron', minute=0)
+scheduler.add_job(update_google_sheet_wrapper, 'cron', hour=1, minute=0)
 #scheduler.add_job(end_work_automatically, 'interval', minutes=1)
 
 # Запуск планировщика

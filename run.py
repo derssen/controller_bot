@@ -4,28 +4,16 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.fsm.storage.memory import MemoryStorage
 from fastapi import FastAPI
-from pydantic import BaseModel
 import uvicorn
 from contextlib import asynccontextmanager
 
 from app.scheduler import scheduler, check_scheduler_status  # Обновленный импорт
 from config import API_TOKEN
 from app.handlers import router
-from app.database.requests import update_leads_from_crm
+from app.database.requests import update_leads_from_crm_async
+from app.database.models import LeadData
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-
-# Создание экземпляра приложения FastAPI
-#appi = FastAPI()
-
-
-
-# Модель данных для эндпоинта
-class LeadData(BaseModel):
-    chat_id: str
-    lead_count: int
-
 
 
 async def set_commands(bot: Bot):
@@ -34,6 +22,7 @@ async def set_commands(bot: Bot):
         BotCommand(command="/help", description="Помощь")
     ]
     await bot.set_my_commands(commands)
+
 
 @asynccontextmanager
 async def lifespan(appi: FastAPI):
@@ -48,7 +37,9 @@ async def lifespan(appi: FastAPI):
     yield
     # Код при завершении приложения (если нужно)
 
+
 appi = FastAPI(lifespan=lifespan)
+
 
 # Эндпоинт для получения данных
 @appi.post("/update_leads")
@@ -57,8 +48,9 @@ async def update_leads(lead_data: LeadData):
     lead_count = lead_data.lead_count
     logging.info(f'Получены данные: chat_id={chat_id}, lead_count={lead_count}')
     # Выполните нужные действия с данными (например, обновление базы данных)
-    update_leads_from_crm(chat_id, lead_count)
+    await update_leads_from_crm_async(chat_id, lead_count)
     return {"status": "success", "message": "Data received", "chat_id": chat_id, "lead_count": lead_count}
+
 
 if __name__ == '__main__':
     uvicorn.run("run:appi", host="0.0.0.0", port=4046)

@@ -1,13 +1,14 @@
 from aiogram import Router, F
-from aiogram.types import Message
-from aiogram.filters import CommandStart, Command
+from aiogram.types import Message, CallbackQuery
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from app.database.requests import (
     add_general_info, add_user_info, get_random_phrase, 
     end_work, session, add_admin_to_db,
     add_head_to_db, update_group_id, get_heads_ids,
     del_manager_from_db, del_head_from_db, show_state_list,
-    get_language_by_chat_id, get_eng_random_phrase
+    get_language_by_chat_id, get_eng_random_phrase,
+    get_amocrm_id_by_name, get_head_username_by_id
 )
 from app.database.models import UserInfo, AddManagerState, AddHeadState, DelManagerState, DelHeadState
 from config import ALLOWED_IDS
@@ -15,11 +16,13 @@ from datetime import datetime
 import export_google 
 import app.keyboards as kb
 import logging 
+import asyncio
 
 
 
 router = Router()
 heads_ids = get_heads_ids()
+
 
 # Команда /start
 @router.message(CommandStart())
@@ -30,6 +33,7 @@ async def cmd_start(message: Message):
     else:
         await message.answer("Привет! \n К сожалению у вас нету никаких прав в этом мире)")
 
+
 # Команда /help
 @router.message(Command(commands=['help']))
 async def cmd_help(message: Message):
@@ -38,11 +42,13 @@ async def cmd_help(message: Message):
     else:
         await message.answer("Привет! \n К сожалению у вас нету никаких прав в этом мире)")
 
+
 # Обработка нажатия на кнопку "добавить менеджера"
 @router.message(F.text == "Добавить менеджера", F.from_user.id.in_(ALLOWED_IDS))
 async def add_admin(message: Message, state: FSMContext):
     await message.answer("Пожалуйста, пересланное сообщение от пользователя или введите user_id.")
     await state.set_state(AddManagerState.waiting_for_user)
+
 
 # Обработка нажатия на кнопку "добавить руководителя"
 @router.message(F.text == "Добавить руководителя", F.from_user.id.in_(ALLOWED_IDS))
@@ -50,17 +56,20 @@ async def add_admin(message: Message, state: FSMContext):
     await message.answer("Пожалуйста, пересланное сообщение от руководителя или введите user_id.")
     await state.set_state(AddHeadState.waiting_for_user)
 
+
 # Обработка нажатия на кнопку "удалить менеджера"
 @router.message(F.text == "Удалить менеджера", F.from_user.id.in_(ALLOWED_IDS))
 async def add_admin(message: Message, state: FSMContext):
     await message.answer("Пожалуйста, пересланное сообщение от пользователя или введите user_id.")
     await state.set_state(DelManagerState.waiting_for_user)
 
+
 # Обработка нажатия на кнопку "удалить руководителя"
 @router.message(F.text == "Удалить руководителя", F.from_user.id.in_(ALLOWED_IDS))
 async def add_admin(message: Message, state: FSMContext):
     await message.answer("Пожалуйста, пересланное сообщение от руководителя или введите user_id.")
     await state.set_state(DelHeadState.waiting_for_user)
+
 
 # Обработка нажатия на кнопку "Перечень сотрудников"
 @router.message(F.text == "Перечень сотрудников", F.from_user.id.in_(ALLOWED_IDS))
@@ -69,21 +78,34 @@ async def add_admin(message: Message):
     await message.answer(heads)
     await message.answer(managers)
 
+
 # Обработка нажатия на кнопку "Обновить форматирование Google Sheet"
 @router.message(F.text == "Обновить форматирование таблиц", F.from_user.id.in_(ALLOWED_IDS))
 async def update_format_google(message: Message):
     await message.answer("Обновление форматирования запущено, пожалуйста подождите...")
-    await export_google.main()
+    loop = asyncio.get_running_loop()
+    def run_main_sync():
+        # Запускаем асинхронную функцию main() синхронно в отдельном потоке
+        asyncio.run(export_google.main())
+    # Выполняем run_main_sync в executor, чтобы не блокировать event loop
+    await loop.run_in_executor(None, run_main_sync)
     await message.answer("Обновлено!")
+
 
 # Обработка нажатия на кнопку "Обновить данные Google Sheet"
 @router.message(F.text == "Обновить данные таблиц", F.from_user.id.in_(ALLOWED_IDS))
 async def update_date_google(message: Message):
     await message.answer("Обновление данных запущено, пожалуйста подождите...")
+    loop = asyncio.get_running_loop()
+    def run_update_user_data_sync():
+        # Запускаем асинхронную функцию main() синхронно в отдельном потоке
+        asyncio.run(export_google.update_user_data())
+    # Выполняем run_main_sync в executor, чтобы не блокировать event loop
+    await loop.run_in_executor(None, run_update_user_data_sync)
     await export_google.update_user_data()
     await message.answer("Обновлено!")
 
-# Менеджер: Обработка пересланного сообщения или ввода user_id
+
 @router.message(AddManagerState.waiting_for_user)
 async def process_user_id(message: Message, state: FSMContext):
     if message.forward_from:
@@ -94,8 +116,13 @@ async def process_user_id(message: Message, state: FSMContext):
         await message.answer("Неправильный формат. Пожалуйста, пересланное сообщение или введите user_id.")
         return
     await state.update_data(user_id=user_id)
-    await message.answer("Теперь введите желаемое имя для менеджера.")
+    # Используем HTML-разметку для ссылки
+    await message.answer(
+        'Введите имя для менеджера. Оно должно соответствовать <a href="https://baliloversagency.amocrm.ru/settings/users/">AMO CRM</a>.',
+        parse_mode='HTML'
+    )
     await state.set_state(AddManagerState.waiting_for_name)
+
 
 # Руководитель: Обработка пересланного сообщения или ввода user_id
 @router.message(AddHeadState.waiting_for_user)
@@ -112,6 +139,7 @@ async def process_head_id(message: Message, state: FSMContext):
     await message.answer("Теперь введите желаемое имя для руководителя.")
     await state.set_state(AddHeadState.waiting_for_name)
 
+
 # Менеджер.Удаление: Обработка пересланного сообщения или ввода user_id
 @router.message(DelManagerState.waiting_for_user)
 async def process_user_id(message: Message, state: FSMContext):
@@ -125,6 +153,7 @@ async def process_user_id(message: Message, state: FSMContext):
     await state.update_data(user_id=user_id)
     output_text = del_manager_from_db(user_id)
     await message.answer(output_text)
+
 
 # Руководитель.Удаление: Обработка пересланного сообщения или ввода user_id
 @router.message(DelHeadState.waiting_for_user)
@@ -146,38 +175,48 @@ async def process_head_id(message: Message, state: FSMContext):
 async def process_admin_name(message: Message, state: FSMContext):
     admin_name = message.text
     await state.update_data(admin_name=admin_name)
-    await message.answer("Пожалуйста, введите amocrm_id менеджера (число).")
-    await message.answer("Для того, чтобы его получить, перейди по ссылке https://baliloversagency.amocrm.ru/api/v4/users/ и поищи (cmd+F) нужного менеджера")
-    await state.set_state(AddManagerState.waiting_for_amocrm_id)
-
-# Менеджер: Обработка ввода amocrm_id
-@router.message(AddManagerState.waiting_for_amocrm_id)
-async def process_amocrm_id(message: Message, state: FSMContext):
-    if message.text.isdigit():
-        amocrm_id = int(message.text)
-        await state.update_data(amocrm_id=amocrm_id)
-        await message.answer("Пожалуйста, введите язык менеджера (например, 'ru' или 'en').")
-        await state.set_state(AddManagerState.waiting_for_language)
-    else:
-        await message.answer("Неправильный формат. Пожалуйста, введите числовой amocrm_id.")
+    await message.answer("Введите РОПа, закрепленного за менеджером.", reply_markup=kb.get_heads_keyboard())
+    await state.set_state(AddManagerState.waiting_for_rop)
 
 
-# Менеджер: Обработка ввода language
+# Менеджер: Обработка ввода языка и получение amocrm_id
 @router.message(AddManagerState.waiting_for_language)
 async def process_language(message: Message, state: FSMContext):
     language = message.text.strip().lower()
-    if language not in ['ru', 'en']:  # Добавьте нужные вам языки
-        await message.answer("Неправильный формат. Пожалуйста, введите корректный язык (например, 'ru' или 'en').")
+    if language not in ['ru', 'en']:
+        await message.answer("Неправильный формат. Пожалуйста, введите корректный язык ('ru' или 'en').")
         return
-    await state.update_data(language=language)
     data = await state.get_data()
-    user_id = data['user_id']
     admin_name = data['admin_name']
-    amocrm_id = data['amocrm_id']
-    # Вызов функции для добавления менеджера в базу данных с новыми параметрами
-    add_admin_to_db(user_id, admin_name, amocrm_id, language)
-    await message.answer(f"Менеджер {admin_name} с user_id {user_id}, amocrm_id {amocrm_id} и языком {language} был добавлен.")
+    user_id = data['user_id']
+    rop_username = data['rop_username']  # получаем выбранного РОПа
+    
+    amocrm_id = await get_amocrm_id_by_name(admin_name)
+    if amocrm_id is None:
+        await message.answer(f"Не удалось найти amocrm_id для пользователя с именем {admin_name}.")
+        await message.answer(f"Проверьте имя в AMO CRM и попробуйте снова.")
+        await state.clear()
+        return
+    
+    # Добавляем менеджера в БД, передаем rop_username
+    add_admin_to_db(user_id, admin_name, amocrm_id, language, rop_username=rop_username)
+
+    if language == 'en':
+        lang_str = 'английский'
+    else:
+        lang_str = 'русский'        
+    await message.answer(f"Менеджер {admin_name} добавлен.\n"
+                         f"Телеграм айди - {user_id}.\n"
+                         f"AMOCRM айди - {amocrm_id}.\n"
+                         f"Интерфейс пользователя - {lang_str}.\n"
+                         f"РОП - @{rop_username}")
     await state.clear()
+    loop = asyncio.get_running_loop()
+    def run_main_after_adding_manager():
+        asyncio.run(export_google.main())
+    await loop.run_in_executor(None, run_main_after_adding_manager)
+
+    
 
 # Руководитель: Обработка ввода имени
 @router.message(AddHeadState.waiting_for_name)
@@ -189,6 +228,7 @@ async def process_head_name(message: Message, state: FSMContext):
     add_head_to_db(user_id, head_name)
     await message.answer(f"Руководитель с именем {head_name} и user_id {user_id} был добавлен.")
     await state.clear()
+
 
 @router.message(lambda message: message.text and message.text.lower() in ["старт", "start"])
 async def start_work(message: Message):
@@ -228,22 +268,7 @@ async def start_work(message: Message):
             print(f"An error occurred: {e}")
 
 
-'''@router.message(lambda message: message.text and message.text.startswith("+") and message.from_user.id in heads_ids)
-async def add_lead(message: Message):
-    try:
-        group_id = message.chat.id
-        leads = int(message.text.lstrip('+'))
-        print(f'Plus{leads} pushed')
-        update_leads(group_id, leads)  # Update leads count in the database
-        await message.answer("Лиды учтены!")  # Uncomment if a response is needed
-        export_google.update_one_sheet(message.from_user.id)  # Export data to Google Sheets
-    except Exception as e:
-        if 'bot was blocked by the user' in str(e):
-            print("Bot was blocked by the user.")
-        else:
-            print(f"An error occurred: {e}")'''
-
-@router.message(lambda message: message.text and message.text.lower() in ["финиш", "finish"])
+@router.message(lambda message: message.text and message.text.lower() in ["финиш", "finish", "stop"])
 async def finish_work(message: Message):
     print('Finish pushed')
     try:
@@ -269,3 +294,45 @@ async def finish_work(message: Message):
             print("Bot was blocked by the user.")
         else:
             print(f"An error occurred: {e}")
+
+
+@router.message()
+async def forward_message(message: Message):
+    """
+    Forward all received messages to the specified chat ID with sender information.
+    """
+    try:
+        # The target chat ID where messages should be forwarded
+        target_chat_id = -4529397186
+
+        # Get sender's name and username
+        sender_name = message.from_user.full_name or "No Name"
+        sender_username = f"@{message.from_user.username}" if message.from_user.username else "No Username"
+
+        # Create a header with sender information
+        sender_info = f"Сообщение от: {sender_name} ({sender_username})\n"
+
+        # Combine sender information with the original message text
+        if message.text:  # If the message contains text
+            content = sender_info + message.text
+            await message.bot.send_message(chat_id=target_chat_id, text=content)
+        else:  # If the message contains non-text content, forward it
+            await message.forward(chat_id=target_chat_id)
+
+        # Optional: Log the forwarding action
+        logging.info(f"Message from {sender_name} ({sender_username}) forwarded to {target_chat_id}.")
+    except Exception as e:
+        logging.error(f"Failed to forward message: {e}")
+
+@router.callback_query(
+    lambda c: c.data and c.data.startswith("choose_rop_"),
+    StateFilter(AddManagerState.waiting_for_rop)
+)
+async def choose_rop_handler(callback: CallbackQuery, state: FSMContext):
+    head_id_str = callback.data.split("_")[-1]
+    head_id = int(head_id_str)
+    rop_username = get_head_username_by_id(head_id)
+    await state.update_data(rop_username=rop_username)
+    await callback.message.edit_text(f"Руководитель выбран: @{rop_username}")
+    await callback.message.answer("Пожалуйста, введите язык менеджера (например, 'ru' или 'en').")
+    await state.set_state(AddManagerState.waiting_for_language)

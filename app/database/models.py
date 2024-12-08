@@ -3,6 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime
+from pydantic import BaseModel
 
 
 engine = create_engine('sqlite:///database.db')
@@ -50,7 +51,7 @@ Base.metadata.create_all(engine)
 class AddManagerState(StatesGroup):
     waiting_for_user = State()
     waiting_for_name = State()
-    waiting_for_amocrm_id = State()
+    waiting_for_rop = State()  # новое состояние
     waiting_for_language = State()
 
 class AddHeadState(StatesGroup):
@@ -62,3 +63,8 @@ class DelManagerState(StatesGroup):
 
 class DelHeadState(StatesGroup):
     waiting_for_user = State()
+
+# Модель данных для эндпоинта
+class LeadData(BaseModel):
+    chat_id: str
+    lead_count: int

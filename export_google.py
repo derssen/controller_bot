@@ -345,7 +345,6 @@ def update_manager_sheet(manager_name, months, years):
     apply_formatting(manager_sheet)
 
 def apply_formatting(worksheet):
-    # Установка ширины столбцов
     sheet_id = worksheet._properties['sheetId']
     last_col_index = 26  # Настройте при необходимости
 
@@ -380,84 +379,81 @@ def apply_formatting(worksheet):
                 "fields": "pixelSize"
             }
         },
+        # Форматирование ячейки A1 (Имя менеджера)
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 1,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {
+                            "red": 0.678,
+                            "green": 0.847,
+                            "blue": 0.902
+                        },
+                        "textFormat": {
+                            "fontSize": 12,
+                            "bold": True
+                        }
+                    }
+                },
+                "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat"
+            }
+        },
+        # Форматирование меток в A2:A6
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1,  # Row 2
+                    "endRowIndex": 6,    # Row 6
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 1,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {
+                            "red": 0.8,
+                            "green": 1,
+                            "blue": 0.8
+                        },
+                        "textFormat": {
+                            "bold": True
+                        },
+                        "verticalAlignment": "MIDDLE"  # Вертикальное выравнивание по центру для A4 и остальных
+                    }
+                },
+                "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,userEnteredFormat.verticalAlignment"
+            }
+        },
+        # Центрирование с перенесом текста начиная с B2 для всех последующих ячеек
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1,  # Row 2
+                    "endRowIndex": 1000, # Настройте при необходимости
+                    "startColumnIndex": 1,  # Column B
+                    "endColumnIndex": last_col_index,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                        "wrapStrategy": "WRAP"
+                    }
+                },
+                "fields": "userEnteredFormat.horizontalAlignment,userEnteredFormat.verticalAlignment,userEnteredFormat.wrapStrategy"
+            }
+        }
     ]
 
-    # Форматирование ячейки A1 (Имя менеджера)
-    requests.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": sheet_id,
-                "startRowIndex": 0,
-                "endRowIndex": 1,
-                "startColumnIndex": 0,
-                "endColumnIndex": 1,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": {
-                        "red": 0.678,
-                        "green": 0.847,
-                        "blue": 0.902
-                    },
-                    "textFormat": {
-                        "fontSize": 12,
-                        "bold": True
-                    }
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat)"
-        }
-    })
-
-    # Форматирование меток в A2:A6
-    requests.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": sheet_id,
-                "startRowIndex": 1,  # Row 2
-                "endRowIndex": 6,    # Row 6
-                "startColumnIndex": 0,
-                "endColumnIndex": 1,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": {
-                        "red": 0.8,
-                        "green": 1,
-                        "blue": 0.8
-                    },
-                    "textFormat": {
-                        "bold": True
-                    },
-                    "verticalAlignment": "MIDDLE"  # Вертикальное выравнивание по центру для A4
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"
-        }
-    })
-
-    # Центрирование с перенесом текста начиная с B2
-    requests.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": sheet_id,
-                "startRowIndex": 1,  # Row 2
-                "endRowIndex": 1000, # Настройте при необходимости
-                "startColumnIndex": 1,  # Column B
-                "endColumnIndex": last_col_index,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "horizontalAlignment": "CENTER",
-                    "verticalAlignment": "MIDDLE",
-                    "wrapStrategy": "WRAP"
-                }
-            },
-            "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment,wrapStrategy)"
-        }
-    })
-
-    # Применение цветов фона к определённым строкам
+    # Применение цветов фона к определённым строкам (3-6)
     row_colors = {
         '3': (0.851, 0.918, 0.827),  # Light green
         '4': (0.918, 0.82, 0.863),   # Light pink
@@ -481,11 +477,11 @@ def apply_formatting(worksheet):
                         "backgroundColor": color
                     }
                 },
-                "fields": "userEnteredFormat(backgroundColor)"
+                "fields": "userEnteredFormat.backgroundColor"
             }
         })
 
-    # Применение границ к диапазону данных
+    # Применение границ к диапазону данных (A2 - ...)
     num_rows = 6
     requests.append({
         "updateBorders": {
@@ -496,20 +492,106 @@ def apply_formatting(worksheet):
                 "startColumnIndex": 0,
                 "endColumnIndex": last_col_index
             },
-            "top": {"style": "SOLID", "width": 1},
-            "bottom": {"style": "SOLID", "width": 1},
-            "left": {"style": "SOLID", "width": 1},
-            "right": {"style": "SOLID", "width": 1},
-            "innerHorizontal": {"style": "SOLID", "width": 1},
-            "innerVertical": {"style": "SOLID", "width": 1},
+            "top": {"style": "SOLID"},
+            "bottom": {"style": "SOLID"},
+            "left": {"style": "SOLID"},
+            "right": {"style": "SOLID"},
+            "innerHorizontal": {"style": "SOLID"},
+            "innerVertical": {"style": "SOLID"},
         }
     })
+
+    # ========= Новые запросы для объединения и форматирования B2-C2 и D2-E2 ==========
+
+    # Объединение ячеек B2-C2
+    requests.append({
+        "mergeCells": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,   # Row 2
+                "endRowIndex": 2,     # Row 3
+                "startColumnIndex": 1,# Column B
+                "endColumnIndex": 3   # Column C
+            },
+            "mergeType": "MERGE_ALL"
+        }
+    })
+
+    # Объединение ячеек D2-E2
+    requests.append({
+        "mergeCells": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,   # Row 2
+                "endRowIndex": 2,     # Row 3
+                "startColumnIndex": 3,# Column D
+                "endColumnIndex": 5   # Column E
+            },
+            "mergeType": "MERGE_ALL"
+        }
+    })
+
+    # Форматирование объединённой области B2-C2
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,   # Row 2
+                "endRowIndex": 2,     # Row 3
+                "startColumnIndex": 1,# B
+                "endColumnIndex": 3   # C
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {
+                        "red": 0.8,
+                        "green": 1,
+                        "blue": 0.8
+                    },
+                    "textFormat": {
+                        "fontSize": 12,
+                        "bold": True
+                    }
+                }
+            },
+            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat"
+        }
+    })
+
+    # Форматирование объединённой области D2-E2
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,   # Row 2
+                "endRowIndex": 2,     # Row 3
+                "startColumnIndex": 3,# D
+                "endColumnIndex": 5   # E
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {
+                        "red": 0.8,
+                        "green": 1,
+                        "blue": 0.8
+                    },
+                    "textFormat": {
+                        "fontSize": 12,
+                        "bold": True
+                    }
+                }
+            },
+            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat"
+        }
+    })
+    # ==========================================================================
 
     # Выполнение всех запросов форматирования за один раз
     execute_with_retry(lambda: worksheet.spreadsheet.batch_update({'requests': requests}))
 
     # Замораживание первых двух строк и первого столбца
     worksheet.freeze(rows=2, cols=1)
+
 
 def update_main_sheet(manager_names, all_months, all_years):
     client = authorize_google_sheets()

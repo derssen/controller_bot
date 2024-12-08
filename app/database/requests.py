@@ -1,7 +1,9 @@
 import gspread
+import asyncio
 import logging
 import requests
 import export_google 
+import httpx
 from oauth2client.service_account import ServiceAccountCredentials
 from sqlalchemy import create_engine, func, select, update, insert, Table, MetaData, and_
 from sqlalchemy.orm import sessionmaker, Session
@@ -22,6 +24,7 @@ metadata = MetaData()
 names_table = Table('names', metadata, autoload_with=engine)
 heads_table = Table('heads', metadata, autoload_with=engine)
 
+
 def format_duration(duration):
     """
     Форматировать длительность в формате "часы, минуты, секунды".
@@ -36,8 +39,8 @@ def format_duration(duration):
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     print('========== format duration', hours+8, minutes, seconds)
-    
     return f"{hours+8} час(а) {minutes} минут(ы) {seconds} секунд(ы)"
+
 
 def get_random_phrase():
     """
@@ -102,41 +105,6 @@ def add_user_info(user_id, general_id, start_time, started=False):
         print(f"Failed to add UserInfo: {e}")
 
 
-'''def update_leads(chat_id, leads):
-    print(f'Сработала функция update leads, chat_id={chat_id}, leads={leads}')
-    try:
-        # Fetch the real_user_id from the names table using chat_id (group_id)
-        name_entry = session.query(names_table).filter_by(group_id=chat_id).first()
-        
-        if not name_entry:
-            print("No user found with the given chat_id.")
-            return
-
-        real_user_id = name_entry.real_user_id
-        
-        # Fetch the most recent UserInfo entry for the real_user_id where work has not ended
-        user = session.query(UserInfo).filter_by(user_id=real_user_id, end_time=None).order_by(UserInfo.id.desc()).first()
-        
-        if user:
-            # If an active user session exists, update the leads
-            user.leads += leads
-            session.commit()
-        else:
-            # If no active session exists, create a new entry
-            general_id = add_general_info()
-            start_time = datetime.now()
-            # Adding a new user info entry with the leads count
-            add_user_info(real_user_id, general_id, start_time, started=True)
-            user_info = UserInfo(user_id=real_user_id, general_id=general_id, leads=leads, start_time=start_time, started=True)
-            session.add(user_info)
-            session.commit()
-
-    except Exception as e:
-        session.rollback()
-        print(f"Ошибка при обновлении лидов: {e}")
-    finally:
-        session.close()'''
-
 def send_time_to_telegram(start_time):
     print(f'Сработала функция send_time_to_telegram, start_time={start_time}')
     try:
@@ -166,6 +134,17 @@ def send_time_to_telegram(start_time):
             print(f"Ошибка отправки: {response.status_code}")
     except Exception as e:
         print(f"send_time_to_telegram - An error occurred: {e}")        
+
+
+async def update_leads_from_crm_async(chat_id, leads):
+    loop = asyncio.get_running_loop()
+    def sync_work():
+        # Синхронная работа, включая вызов export_google.update_user_data()
+        update_leads_from_crm(chat_id, leads)
+    # Запускаем тяжелую синхронную работу в пуле потоков
+    await loop.run_in_executor(None, sync_work)
+    print('update_leads_from_crm - запущена в цикл выполнения.')
+
 
 
 def update_leads_from_crm(chat_id, leads):
@@ -219,7 +198,7 @@ def update_leads_from_crm(chat_id, leads):
         
         # Обновление Google Sheets
         print('Лиды добавлены в БД через вебхук, запускается отрисовка таблицы.')
-        export_google.update_user_data()
+        asyncio.run(export_google.update_user_data())
     
     except Exception as e:
         session.rollback()
@@ -228,8 +207,6 @@ def update_leads_from_crm(chat_id, leads):
     finally:
         print("Закрытие сессии...")
         session.close()
-
-
 
 
 def end_work(user_id, end_time):
@@ -291,23 +268,21 @@ def end_work(user_id, end_time):
         return f"Произошла ошибка при завершении работы: {e}", ""
 
 
-
-def add_admin_to_db(user_id, user_name, amocrm_id, language):
+def add_admin_to_db(user_id, user_name, amocrm_id, language, rop_username=None):
     try:
         with Session() as session:
-            # Проверяем, существует ли уже такой пользователь в базе
             result = session.execute(select(names_table.c.real_user_id).where(names_table.c.real_user_id == user_id)).fetchone()
 
             if result:
-                # Обновляем запись, если пользователь уже есть в базе
+                # Обновляем запись, если пользователь уже есть
                 session.execute(
                     names_table.update().where(names_table.c.real_user_id == user_id).values(
                         real_name=user_name,
                         amocrm_id=amocrm_id,
-                        language=language
+                        language=language,
+                        rop_username=rop_username
                     ),
                 )
-                print(f"Updated existing admin with user_id {user_id}: name: {user_name}, amocrm_id: {amocrm_id}, language: {language}")
             else:
                 # Вставляем нового пользователя
                 session.execute(
@@ -315,20 +290,14 @@ def add_admin_to_db(user_id, user_name, amocrm_id, language):
                         real_user_id=user_id,
                         real_name=user_name,
                         amocrm_id=amocrm_id,
-                        language=language
+                        language=language,
+                        rop_username=rop_username
                     )
                 )
-                print(f"Added new admin with user_id {user_id}, name: {user_name}, amocrm_id: {amocrm_id}, language: {language}")
-
-            # Сохраняем изменения
             session.commit()
-
-            # Создаем страницу в Google Sheets при успешном добавлении
             update_sheet(user_name)
-            print(f"Worksheet '{user_name}' created.")
     except Exception as e:
         print(f"Failed to add manager: {e}")
-
 
 
 def del_manager_from_db(user_id):
@@ -387,26 +356,29 @@ def del_head_from_db(user_id):
 
 def add_head_to_db(user_id, user_name):
     try:
-        # Создаем сессию
         with Session() as session:
-            # Проверяем, существует ли уже такой пользователь в базе
             result = session.execute(select(heads_table.c.head_id).where(heads_table.c.head_id == user_id)).fetchone()
 
             if result:
-                # Обновляем имя, если пользователь уже есть в базе
+                # Обновляем имя, если руководитель уже есть в базе
                 session.execute(
                     heads_table.update().where(heads_table.c.head_id == user_id).values(head_name=user_name),
                 )
                 print(f"Updated existing head with user_id {user_id} to name: {user_name}")
             else:
-                # Вставляем нового пользователя
+                # Вставляем нового руководителя
                 session.execute(
                     heads_table.insert().values(head_id=user_id, head_name=user_name)
                 )
                 print(f"Added new head with user_id {user_id} and name: {user_name}")
-            
-            # Сохраняем изменения
             session.commit()
+
+        # Получаем username из Telegram и обновляем
+        username = get_head_username_from_telegram(user_id)
+        if username:
+            update_head_username_in_db(user_id, username)
+        else:
+            print("Не удалось получить username для нового руководителя.")
 
     except Exception as e:
         print(f"Failed to add head: {e}")
@@ -461,6 +433,7 @@ def update_sheet(real_name):
         worksheet.update('A1', [[real_name]])
         print(f"Worksheet '{real_name}' created.")
 
+
 def get_heads_ids():
     # Connect to the database
     with Session() as session:
@@ -498,7 +471,6 @@ def show_state_list():
     except Exception as e:
         print(f"Ошибка при выполнении show_state_list: {e}")
         return "Ошибка при извлечении руководителей.", "Ошибка при извлечении менеджеров."
-
 
 
 def send_daily_leads_to_group():
@@ -569,4 +541,72 @@ def get_language_by_chat_id(chat_id: int):
                 return None
     except Exception as e:
         logging.info(f"Error fetching language for chat_id {chat_id}: {e}")
+        return None
+
+
+async def get_amocrm_id_by_name(name):
+    url = "http://127.0.0.1:4040/get_amocrm_id_by_name"  # Замените на реальный IP и порт сервера
+    data = {
+        "name": str(name)
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=data)
+            response.raise_for_status()
+            logging.info(f"Имя '{name}' успешно отправлены на сервер")
+            result = response.json()
+            return result 
+    except Exception as e:
+        logging.error(f"get_amocrm_id_by_name - Непредвиденная ошибка: {str(e)}")
+
+def get_head_username_from_telegram(head_id: int):
+    """
+    Получить username руководителя по его chat_id (head_id) через Telegram API.
+    Возвращает username или None, если не удалось получить.
+    """
+    url = f"https://api.telegram.org/bot{API_TOKEN}/getChat?chat_id={head_id}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if data.get("ok"):
+            return data["result"].get("username")
+        else:
+            print(f"Не удалось получить username для head_id {head_id}, ответ: {data}")
+            return None
+    except Exception as e:
+        print(f"Ошибка при запросе username для head_id {head_id}: {e}")
+        return None
+    
+
+def update_head_username_in_db(head_id: int, username: str):
+    """
+    Обновить username руководителя в БД.
+    """
+    try:
+        with Session() as local_session:
+            local_session.execute(
+                heads_table.update().where(heads_table.c.head_id == head_id).values(username=username)
+            )
+            local_session.commit()
+            print(f"Username {username} обновлен для head_id {head_id}")
+    except Exception as e:
+        print(f"Ошибка при обновлении username для head_id {head_id}: {e}")
+
+
+def get_all_heads():
+    """
+    Возвращает список всех руководителей в формате [(head_name, head_id), ...]
+    """
+    with Session() as session:
+        result = session.execute(select(heads_table.c.head_name, heads_table.c.head_id)).fetchall()
+        return result
+    
+def get_head_username_by_id(head_id):
+    with Session() as session:
+        result = session.execute(
+            select(heads_table.c.username)
+            .where(heads_table.c.head_id == head_id)
+        ).fetchone()
+        if result:
+            return result[0]
         return None
