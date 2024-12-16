@@ -7,7 +7,7 @@ import httpx
 from oauth2client.service_account import ServiceAccountCredentials
 from sqlalchemy import create_engine, func, select, update, insert, Table, MetaData, and_
 from sqlalchemy.orm import sessionmaker, Session
-from app.database.models import MotivationalPhrases, MotivationalEngPhrases, UserInfo, GeneralInfo
+from app.database.models import MotivationalPhrases, MotivationalEngPhrases, UserInfo
 from datetime import datetime, timedelta, timezone, date
 from config import JSON_FILE, DATABASE_URL, GOOGLE_SHEET, API_TOKEN
 
@@ -94,12 +94,12 @@ def add_general_info():
         return None
 
 
-def add_user_info(user_id, general_id, start_time, started=False):
+def add_user_info(user_id, start_time, started=False):
     try:
-        user_info = UserInfo(user_id=user_id, general_id=general_id, date=start_time, start_time=start_time, started=started)
+        user_info = UserInfo(user_id=user_id, date=start_time, start_time=start_time, started=started)
         session.add(user_info)
         session.commit()
-        print(f"Added UserInfo for user_id: {user_id} with general_id: {general_id}")
+        print(f"Added UserInfo for user_id: {user_id}")
     except Exception as e:
         session.rollback()
         print(f"Failed to add UserInfo: {e}")
@@ -610,3 +610,112 @@ def get_head_username_by_id(head_id):
         if result:
             return result[0]
         return None
+
+
+def mark_photo_sent(user_id: int):
+    """
+    Отмечает, что пользователь отправил фото сегодня (has_photo = 1).
+    Если записи на сегодня в user_info не существует — создаем новую.
+    """
+    today = datetime.now().date()
+    with Session() as local_session:
+        user_info = local_session.query(UserInfo).filter(
+            UserInfo.user_id == user_id,
+            func.date(UserInfo.date) == today
+        ).first()
+
+        if user_info:
+            # Обновляем has_photo
+            user_info.has_photo = 1
+        else:
+            # Создаем новую запись user_info на сегодня
+            new_record = UserInfo(
+                user_id=user_id,
+                date=datetime.now(),
+                has_photo=1
+            )
+            local_session.add(new_record)
+
+        local_session.commit()
+        logging.info(f"Для пользователя {user_id} зафиксировано has_photo=1 за сегодня.")
+
+
+def check_daily_reports(message_text: str):
+    """
+    Проверяет, у кого из пользователей за сегодня нет записи с has_photo=1.
+    Если у менеджера language='en', заменяем message_text на английский эквивалент, если он есть.
+    """
+    eng_equivalents = {
+        "Не забудь подать скрин отчёта до 13:55 по Бали": "Don't forget to submit your report screenshot by 13:55 Bali time",
+        "Отчет!": "Report!"
+    }
+
+    today = datetime.now().date()
+    with Session() as local_session:
+        # Делаем LEFT JOIN между names и user_info, чтобы получить всех менеджеров.
+        # Условие:
+        # - Если у менеджера нет записи в user_info за сегодня (user_info.id IS NULL) или has_photo=0,
+        #   значит фото не отправлено.
+
+        from sqlalchemy.orm import aliased
+        ui = aliased(UserInfo)
+
+        query = (local_session.query(
+                    names_table.c.real_user_id,
+                    names_table.c.group_id,
+                    names_table.c.language,
+                    ui.has_photo
+                 )
+                 .outerjoin(ui, and_(
+                     ui.user_id == names_table.c.real_user_id,
+                     func.date(ui.date) == today
+                 ))
+                 .filter((ui.id == None) | (ui.has_photo == 0))
+        )
+
+        users = query.all()
+
+        for (u_id, group_id, lang, has_photo) in users:
+            if not group_id:
+                logging.info(f"Не найден group_id для user_id {u_id}")
+                continue
+
+            # Если язык менеджера английский, подставляем перевод
+            if lang == 'en':
+                text_to_send = eng_equivalents.get(message_text, message_text)
+            else:
+                text_to_send = message_text
+
+            send_message_to_group(group_id, text_to_send)
+
+
+def send_message_to_group(chat_id, text):
+    url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text
+    }
+    response = requests.post(url, data=payload)
+    if response.status_code == 200:
+        logging.info(f"Сообщение успешно отправлено в чат {chat_id}: {text}")
+    else:
+        logging.error(f"Ошибка при отправке сообщения в чат {chat_id}: {response.text}")
+    send_debug_message(chat_id, text)
+
+async def send_debug_message(chat_id, message_text):
+    """
+    Отправка сообщения в Telegram.
+    """
+    try:
+
+        message_text = f'Сообщение для пользователя (chat_id {chat_id}): ' + message_text
+        
+        url = f'https://api.telegram.org/bot{API_TOKEN}/sendMessage'
+        payload = {'chat_id': '-4529397186', 'text': message_text}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, data=payload)
+            if response.status_code != 200:
+                logging.error(f"Ошибка при отправке сообщения: {response.text}")
+    except Exception as e:
+        logging.error(f"Ошибка при отправке сообщения: {e}")

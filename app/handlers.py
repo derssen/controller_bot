@@ -3,12 +3,13 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from app.database.requests import (
-    add_general_info, add_user_info, get_random_phrase, 
+    add_user_info, get_random_phrase, 
     end_work, session, add_admin_to_db,
     add_head_to_db, update_group_id, get_heads_ids,
     del_manager_from_db, del_head_from_db, show_state_list,
     get_language_by_chat_id, get_eng_random_phrase,
-    get_amocrm_id_by_name, get_head_username_by_id
+    get_amocrm_id_by_name, get_head_username_by_id,
+    mark_photo_sent
 )
 from app.database.models import UserInfo, AddManagerState, AddHeadState, DelManagerState, DelHeadState
 from config import ALLOWED_IDS
@@ -243,9 +244,8 @@ async def start_work(message: Message):
         #     return
 
         group_id = message.chat.id
-        general_id = add_general_info()
         start_time=datetime.now()
-        add_user_info(user_id, general_id, start_time, started=True)
+        add_user_info(user_id, start_time, started=True)
         
         update_group_id(user_id, group_id)
 
@@ -296,6 +296,36 @@ async def finish_work(message: Message):
             print(f"An error occurred: {e}")
 
 
+@router.callback_query(
+    lambda c: c.data and c.data.startswith("choose_rop_"),
+    StateFilter(AddManagerState.waiting_for_rop)
+)
+async def choose_rop_handler(callback: CallbackQuery, state: FSMContext):
+    head_id_str = callback.data.split("_")[-1]
+    head_id = int(head_id_str)
+    rop_username = get_head_username_by_id(head_id)
+    await state.update_data(rop_username=rop_username)
+    await callback.message.edit_text(f"Руководитель выбран: @{rop_username}")
+    await callback.message.answer("Пожалуйста, введите язык менеджера (например, 'ru' или 'en').")
+    await state.set_state(AddManagerState.waiting_for_language)
+
+@router.message(F.photo)
+async def handle_photo_message(message: Message):
+    user_id = message.from_user.id
+    mark_photo_sent(user_id)
+    #await message.answer("Отчет (фото) получен, отлично!")
+# это для дебага
+    # Далее вручную пересылаем сообщение как в forward_message:
+    target_chat_id = -4529397186
+    sender_name = message.from_user.full_name or "No Name"
+    sender_username = f"@{message.from_user.username}" if message.from_user.username else "No Username"
+    sender_info = f"Сообщение от: {sender_name} ({sender_username})\n"
+
+    # Поскольку это фото, мы просто его форвардим:
+    await message.forward(chat_id=target_chat_id)
+    logging.info(f"Photo message from {sender_name} ({sender_username}) forwarded to {target_chat_id}.")
+
+
 @router.message()
 async def forward_message(message: Message):
     """
@@ -323,16 +353,3 @@ async def forward_message(message: Message):
         logging.info(f"Message from {sender_name} ({sender_username}) forwarded to {target_chat_id}.")
     except Exception as e:
         logging.error(f"Failed to forward message: {e}")
-
-@router.callback_query(
-    lambda c: c.data and c.data.startswith("choose_rop_"),
-    StateFilter(AddManagerState.waiting_for_rop)
-)
-async def choose_rop_handler(callback: CallbackQuery, state: FSMContext):
-    head_id_str = callback.data.split("_")[-1]
-    head_id = int(head_id_str)
-    rop_username = get_head_username_by_id(head_id)
-    await state.update_data(rop_username=rop_username)
-    await callback.message.edit_text(f"Руководитель выбран: @{rop_username}")
-    await callback.message.answer("Пожалуйста, введите язык менеджера (например, 'ru' или 'en').")
-    await state.set_state(AddManagerState.waiting_for_language)
