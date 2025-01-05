@@ -1,3 +1,4 @@
+# models.py
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -35,22 +36,16 @@ class MotivationalEngPhrases(Base):
 Base.metadata.create_all(engine)
 
 
-# Определение состояний для FSM
-class AddManagerState(StatesGroup):
-    waiting_for_user = State()
-    waiting_for_name = State()
-    waiting_for_rop = State()
-    waiting_for_language = State()
+# Состояния для добавления/удаления пользователей
+class AddUserState:
+    waiting_for_user = "waiting_for_user"           # Ждем user_id
+    waiting_for_rank = "waiting_for_rank"           # Выбор ранга (1=менеджер, 2=валидатор, 3=РОП)
+    waiting_for_name = "waiting_for_name"           # Ждем реального имени (AMO CRM)
+    waiting_for_language = "waiting_for_language"   # Ждем 'ru' или 'en'
+    waiting_for_rop_username = "waiting_for_rop_username"  # Ждем username РОПа (если rank=1 или 2)
 
-class AddHeadState(StatesGroup):
-    waiting_for_user = State()
-    waiting_for_name = State()
-
-class DelManagerState(StatesGroup):
-    waiting_for_user = State()
-
-class DelHeadState(StatesGroup):
-    waiting_for_user = State()
+class DelUserState:
+    waiting_for_user_to_delete = "waiting_for_user_to_delete"
 
 class LeadData(BaseModel):
     chat_id: str

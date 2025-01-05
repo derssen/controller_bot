@@ -1,29 +1,35 @@
-from aiogram.types import (ReplyKeyboardMarkup, KeyboardButton,
-                           InlineKeyboardMarkup, InlineKeyboardButton)
-from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
-from app.database.requests import get_all_heads
+# keyboards.py
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 start = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text='Добавить менеджера'), KeyboardButton(text='Добавить руководителя')],
-    [KeyboardButton(text='Удалить менеджера'), KeyboardButton(text='Удалить руководителя')],
+    [KeyboardButton(text='Добавить пользователя'), KeyboardButton(text='Удалить пользователя')],
     [KeyboardButton(text='Перечень сотрудников'), KeyboardButton(text='Обновить данные таблиц')],
     [KeyboardButton(text='Обновить форматирование таблиц')]
 ],
-                           resize_keyboard=True,
-                           input_field_placeholder='Выберите действие...')
+    resize_keyboard=True,
+    input_field_placeholder='Выберите действие...'
+)
 
-def get_heads_keyboard():
+
+def get_ranks_keyboard():
     """
-    Создает инлайн-клавиатуру с именами всех руководителей.
+    Инлайн-кнопки для выбора категории: Менеджер(1), Валидатор(2), РОП(3).
     """
     builder = InlineKeyboardBuilder()
-    heads = get_all_heads()  # heads: [(head_name, head_id), ...]
-
-    for head_name, head_id in heads:
-        builder.button(text=head_name, callback_data=f"choose_rop_{head_id}")
-
-    # Настраиваем расположение кнопок, например, по 1 в ряд
+    builder.button(text="Менеджер", callback_data="choose_rank_1")
+    builder.button(text="Валидатор", callback_data="choose_rank_2")
+    builder.button(text="РОП", callback_data="choose_rank_3")
     builder.adjust(1)
+    return builder.as_markup()
 
-    # Возвращаем сгенерированную клавиатуру
+
+def get_rop_inline_keyboard(rops_data):
+    """
+    rops_data: [(rop_username, rop_real_name), ...].
+    """
+    builder = InlineKeyboardBuilder()
+    for rop_un, rop_real_name in rops_data:
+        builder.button(text=f"{rop_real_name} (@{rop_un})", callback_data=f"select_rop_{rop_un}")
+    builder.adjust(1)
     return builder.as_markup()

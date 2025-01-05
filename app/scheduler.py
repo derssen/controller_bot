@@ -1,3 +1,4 @@
+# scheduler.py
 import logging
 import asyncio
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -5,15 +6,13 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 from app.database.models import UserInfo
-from app.database.requests import engine, end_work, send_daily_leads_to_group, check_daily_reports
+from app.database.requests import engine, check_daily_reports, send_report_1_message
 import export_google
-#from export_google import get_user_name, fetch_user_data, format_data_for_sheet, update_sheet
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 bali_tz = timezone(timedelta(hours=8))
 Session = sessionmaker(bind=engine)
-
 
 def end_work_automatically():
     """
@@ -40,15 +39,12 @@ def end_work_automatically():
     finally:
         session.close()
 
-
 async def send_message_to_user(user_id, message):
     try:
         # Пример асинхронной логики отправки сообщения
-        # await message.answer('Тут будет ваша статистика')
         print(f"Сообщение отправлено пользователю {user_id}: {message}")
     except Exception as e:
         print(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
-
 
 def update_google_sheet_wrapper():
     asyncio.run(update_google_sheet())
@@ -60,7 +56,6 @@ async def update_google_sheet():
     except Exception as e:
         print(f"Ошибка при новлении Google Sheet: {e}")
 
-
 def check_scheduler_status():
     current_time = datetime.now(bali_tz)
     logging.info(f"Текущее время: {current_time.strftime('%Y-%m-%d %H:%M:%S')} (по времени Бали)")
@@ -71,29 +66,52 @@ def check_scheduler_status():
     else:
         logging.info("Нет запланированных заданий.")
 
+def check_daily_reports_wrapper(key: str):
+    """
+    Обёртка над check_daily_reports, чтобы вызывать её асинхронно.
+    Теперь key – это ключ из таблицы messages, например 'report_1', 'report_2'.
+    """
+    asyncio.run(check_daily_reports(key))
+
+def send_report_1_message_wrapper(user_id: int, user_language: str):
+    """
+    Обёртка над check_daily_reports, чтобы вызывать её асинхронно.
+    Теперь key – это ключ из таблицы messages, например 'report_1', 'report_2'.
+    """
+    asyncio.run(send_report_1_message(123, 'en'))
 
 scheduler = BackgroundScheduler(timezone=bali_tz)
 scheduler.add_job(end_work_automatically, 'cron', hour=23, minute=59)
 scheduler.add_job(update_google_sheet_wrapper, 'cron', hour=1, minute=0)
 
-# Запускам check_daily_reports асинхронно через лямбда, внутри asyncio.run
-#scheduler.add_job(check_daily_reports, 'cron', hour=12, minute=0, args=["Не забудь подать скрин отчёта до 13:55 по Бали"])
-
-'''scheduler.add_job(
-    check_daily_reports("Не забудь подать скрин отчёта до 13:55 по Бали"),
+# Вместо передачи готовой строки, передаем ключ 'report_1' для 12:00 и 'report_2' для 13:55.
+scheduler.add_job(
+    lambda: asyncio.run(check_daily_reports_wrapper("report_1")), 
     'cron',
+    day_of_week='mon-fri',
     hour=12,
-    minute=00,
-    day_of_week='mon-fri'
-)'''
+    minute=0,
+    id='daily_reports_12'
+)
 
-'''scheduler.add_job(
-    check_daily_reports("Отчет!"),
+scheduler.add_job(
+    lambda: asyncio.run(check_daily_reports_wrapper("report_2")), 
     'cron',
+    day_of_week='mon-fri',
     hour=13,
     minute=55,
-    day_of_week='mon-fri'
-)'''
+    id='daily_reports_13_55'
+)
+
+scheduler.add_job(
+    lambda: asyncio.run(send_report_1_message_wrapper(123, 'en')), 
+    'cron',
+    day_of_week='mon-fri',
+    hour=23,
+    minute=52,
+    id='daily_reports_23_40'
+)
+
 
 scheduler.start()
 logging.info("Планировщик запущен и ожидает выполнения заданий.")

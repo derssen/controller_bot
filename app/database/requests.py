@@ -2,13 +2,12 @@ import gspread
 import asyncio
 import logging
 import requests
-import export_google 
 import httpx
 from oauth2client.service_account import ServiceAccountCredentials
-from sqlalchemy import create_engine, func, select, update, insert, Table, MetaData, and_
+from sqlalchemy import create_engine, func, select, update, Table, MetaData, and_
 from sqlalchemy.orm import sessionmaker, Session
 from app.database.models import MotivationalPhrases, MotivationalEngPhrases, UserInfo
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timedelta
 from config import JSON_FILE, DATABASE_URL, GOOGLE_SHEET, API_TOKEN
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,9 +20,34 @@ session = Session()
 
 # Определение таблицы
 metadata = MetaData()
-names_table = Table('names', metadata, autoload_with=engine)
-heads_table = Table('heads', metadata, autoload_with=engine)
+metadata.reflect(bind=engine)
+names_table = metadata.tables['names']    # Объединённая таблица users
+# heads_table = metadata.tables['heads']  # УДАЛЕНО: Логика heads теперь не нужна
+messages_table = metadata.tables['messages']
 
+def get_phrase_from_db(key: str, language: str = 'ru') -> str:
+    """
+    Получаем сообщение из таблицы messages по ключу и языку.
+    """
+    with Session() as session:
+        row = session.execute(
+            select(messages_table.c.ru_text, messages_table.c.en_text)
+            .where(messages_table.c.key == key)
+        ).fetchone()
+        if not row:
+            logging.warning(f"Не найден ключ {key} в таблице messages.")
+            return key  # fallback – вернём сам key
+
+        ru_text, en_text = row[0], row[1]
+        if language == 'en':
+            return en_text
+        else:
+            return ru_text
+
+
+def get_message_for_user(key: str, user_language: str) -> str:
+    """Обёртка для удобства: возвращаем фразу из БД (messages) на нужном языке."""
+    return get_phrase_from_db(key, user_language)
 
 def format_duration(duration):
     """
@@ -38,7 +62,7 @@ def format_duration(duration):
     total_seconds = int(duration.total_seconds())
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
-    print('========== format duration', hours+8, minutes, seconds)
+    logging.info(f"format_duration: {hours+8}h {minutes}m {seconds}s (UTC+8)")
     return f"{hours+8} час(а) {minutes} минут(ы) {seconds} секунд(ы)"
 
 
@@ -81,28 +105,45 @@ def check_start_work(user_id):
     return session.query(UserInfo).filter_by(user_id=user_id, end_time=None).first()
 
 
-def add_general_info():
-    try:
-        general_info = GeneralInfo()
-        session.add(general_info)
-        session.commit()
-        print(f"Added GeneralInfo with id: {general_info.id}")
-        return general_info.id
-    except Exception as e:
-        session.rollback()
-        print(f"Failed to add GeneralInfo: {e}")
-        return None
-
-
 def add_user_info(user_id, start_time, started=False):
     try:
-        user_info = UserInfo(user_id=user_id, date=start_time, start_time=start_time, started=started)
-        session.add(user_info)
-        session.commit()
-        print(f"Added UserInfo for user_id: {user_id}")
+        with Session() as session:
+            today = start_time.date()
+            # Ищем запись за сегодня
+            existing_info = session.query(UserInfo).filter(
+                UserInfo.user_id == user_id,
+                func.date(UserInfo.date) == today
+            ).first()
+            
+            if existing_info:
+                # Запись за сегодня уже есть
+                if existing_info.start_time is None:
+                    # Дополняем start_time, если его не было
+                    existing_info.start_time = start_time
+                    existing_info.started = started
+                    session.commit()
+                    logging.info(
+                        f"Updated start_time for existing UserInfo on {today} for user_id: {user_id}"
+                    )
+                else:
+                    # start_time уже стоит или рабочий день был начат ранее
+                    logging.info(
+                        f"UserInfo for user_id={user_id} on {today} already has start_time={existing_info.start_time}"
+                    )
+            else:
+                # Нет записи — создаём новую
+                user_info = UserInfo(
+                    user_id=user_id,
+                    date=start_time,
+                    start_time=start_time,
+                    started=started
+                )
+                session.add(user_info)
+                session.commit()
+                logging.info(f"Added new UserInfo record for user_id: {user_id}, date={today}")
     except Exception as e:
-        session.rollback()
-        print(f"Failed to add UserInfo: {e}")
+        logging.error(f"Failed to add or update UserInfo: {e}")
+
 
 
 def send_time_to_telegram(start_time):
@@ -137,252 +178,190 @@ def send_time_to_telegram(start_time):
 
 
 async def update_leads_from_crm_async(chat_id, leads):
+    """
+    Асинхронная оболочка для update_leads_from_crm, чтобы не блокировать event loop.
+    """
     loop = asyncio.get_running_loop()
     def sync_work():
-        # Синхронная работа, включая вызов export_google.update_user_data()
         update_leads_from_crm(chat_id, leads)
-    # Запускаем тяжелую синхронную работу в пуле потоков
     await loop.run_in_executor(None, sync_work)
-    print('update_leads_from_crm - запущена в цикл выполнения.')
-
+    logging.info('update_leads_from_crm_async завершён.')
 
 
 def update_leads_from_crm(chat_id, leads):
-    print(f'Сработала функция update_leads_from_crm, chat_id={chat_id}, leads={leads}')
-    
-    try:
-        # Получаем real_user_id из таблицы names по chat_id (group_id)
+    """
+    Обновляем количество лидов у уже существующей записи user_info за сегодня.
+    Если записи нет, создаём новую.
+    """
+    logging.info(f'Функция update_leads_from_crm: chat_id={chat_id}, leads={leads}')
+    with Session() as session:
         name_entry = session.query(names_table).filter_by(group_id=chat_id).first()
-        
         if not name_entry:
-            print(f"Не удалось найти пользователя с указанным chat_id: {chat_id}")
+            logging.info(f"Не найден пользователь с chat_id: {chat_id}")
             return
 
-        # Извлекаем real_user_id
         real_user_id = name_entry.real_user_id
-        print(f"Найден real_user_id: {real_user_id} для chat_id: {chat_id}")
-        
-        # Текущая дата
+        logging.info(f"Найден user_id={real_user_id} для chat_id={chat_id}")
+
         today = datetime.now().date()
-        print(f"Ищем запись для user_id={real_user_id} на дату {today}")
-        
-        # Проверяем наличие записи с текущей датой (сравнение только по дате)
         user_info = session.query(UserInfo).filter(
-            and_(
-                UserInfo.user_id == real_user_id,
-                func.date(UserInfo.date) == today  # Сравниваем только дату
-            )
+            and_(UserInfo.user_id == real_user_id, func.date(UserInfo.date) == today)
         ).first()
-        print(f'Найдена запись UserInfo: {user_info}')
-        
+
         if user_info:
-            # Обновляем количество лидов, если запись найдена
+            # Уже есть запись за сегодня — добавляем лиды
             user_info.leads += leads
             session.commit()
-            print(f"Обновлена запись для пользователя {real_user_id}: добавлено {leads} лидов.")
+            logging.info(f"Обновлены лиды для user_id={real_user_id}, добавлено {leads}.")
         else:
-            # Создаём новую запись, если записи с текущей датой нет
-            general_id = add_general_info()
+            # Нет записи, создаём новую
             new_user_info = UserInfo(
                 user_id=real_user_id,
-                general_id=general_id,
+                date=datetime.now(),
                 leads=leads,
-                date=datetime.now(),  # Сохраняем дату и время текущего момента
-                start_time=None,
-                end_time=None,
-                started=True
+                started=True  # если хотим считать, что день начался
             )
             session.add(new_user_info)
             session.commit()
-            print(f"Создана новая запись для пользователя {real_user_id} с {leads} лидами. Время: {datetime.now()}")
-        
-        # Обновление Google Sheets
-        print('Лиды добавлены в БД через вебхук, запускается отрисовка таблицы.')
-        asyncio.run(export_google.update_user_data())
-    
-    except Exception as e:
-        session.rollback()
-        print(f"Ошибка при обновлении лидов: {e}")
-    
-    finally:
-        print("Закрытие сессии...")
-        session.close()
+            logging.info(f"Создана новая запись user_info для user_id={real_user_id}, leads={leads}.")
+
+    # Запуск обновления Google Sheets
+    import export_google
+    asyncio.run(export_google.update_user_data())
 
 
 def end_work(user_id, end_time):
-    print(f'Сработала функция end_work, user_id={user_id}, end_time={end_time}')
-    try:
-        # Текущая дата
+    logging.info(f'end_work(user_id={user_id}, end_time={end_time}) запущен.')
+    with Session() as session:
         today = end_time.date()
-        print(f"Ищем первую запись с пустым end_time за {today}")
-
-        # Ищем первую запись с пустым end_time за текущий день
         user = session.query(UserInfo).filter(
             and_(
                 UserInfo.user_id == user_id,
                 UserInfo.end_time.is_(None),
-                func.date(UserInfo.start_time) == today  # Учитываем только дату
+                func.date(UserInfo.start_time) == today
             )
         ).first()
-        
         if user:
-            print(f"Setting end_time for user {user_id} to {end_time}")
-            
-            # Устанавливаем end_time и сохраняем
             user.end_time = end_time
             session.commit()
-            print(f"End time successfully recorded for user {user_id}")
+            logging.info(f"End time успешно записан для user_id={user_id}")
 
-            start_time = user.start_time
-            work_duration = end_time - start_time
-            print('---start end', start_time, end_time)
-            print('==========duration', work_duration)
-            work_duration_str = format_duration(work_duration)
-            
-            # Получаем все записи для пользователя
+            work_duration = end_time - user.start_time
+            daily_str = format_duration(work_duration)
+
+            # Суммируем всё время и лиды
             all_records = session.query(UserInfo).filter_by(user_id=user_id).all()
-            
             total_duration = timedelta()
             total_leads = 0
+            for rec in all_records:
+                if rec.end_time:
+                    total_duration += (rec.end_time - rec.start_time)
+                    total_leads += rec.leads
 
-            for record in all_records:
-                if record.end_time:
-                    record_start_time = record.start_time
-                    record_end_time = record.end_time
-                    duration = record_end_time - record_start_time
-                    total_duration += duration
-                    total_leads += record.leads
-
-            total_work_duration_str = format_duration(total_duration)
-
-            daily_message = f"Ты сегодня проработал {work_duration_str}, закрыл {user.leads} лида(ов). Так держать!"
-            total_message = f"За всё время ты проработал {total_work_duration_str} и закрыл {total_leads} лида(ов)."
-
-            return daily_message, total_message
+            total_str = format_duration(total_duration)
+            daily_msg = f"Ты сегодня проработал {daily_str}, закрыл {user.leads} лида(ов)."
+            total_msg = f"За всё время ты проработал {total_str} и закрыл {total_leads} лида(ов)."
+            return daily_msg, total_msg
         else:
-            print(f"No active work found for user {user_id} on {today}")
-            return "Пользователь не найден или работа за сегодня уже завершена.", ""
-    except Exception as e:
-        session.rollback()
-        print(f"Произошла ошибка при завершении работы: {e}")
-        return f"Произошла ошибка при завершении работы: {e}", ""
+            logging.info(f"Нет незавершённых записей для user_id={user_id} за {today}")
+            return "Пользователь не найден или работа уже завершена.", ""
 
 
-def add_admin_to_db(user_id, user_name, amocrm_id, language, rop_username=None):
+def add_admin_to_db(user_id, user_name, amocrm_id, language, rop_username=None, rank=1, username=None):
+    """
+    Универсальная функция для добавления в таблицу names пользователя с rank=1(менеджер), 2(валидатор), 3(РОП).
+    """
     try:
         with Session() as session:
-            result = session.execute(select(names_table.c.real_user_id).where(names_table.c.real_user_id == user_id)).fetchone()
-
+            result = session.query(names_table.c.real_user_id).filter_by(real_user_id=user_id).first()
             if result:
-                # Обновляем запись, если пользователь уже есть
                 session.execute(
                     names_table.update().where(names_table.c.real_user_id == user_id).values(
                         real_name=user_name,
                         amocrm_id=amocrm_id,
                         language=language,
-                        rop_username=rop_username
-                    ),
+                        rop_username=rop_username,
+                        rank=rank,
+                        username=username or 'username'
+                    )
                 )
             else:
-                # Вставляем нового пользователя
                 session.execute(
                     names_table.insert().values(
                         real_user_id=user_id,
                         real_name=user_name,
                         amocrm_id=amocrm_id,
                         language=language,
-                        rop_username=rop_username
+                        rop_username=rop_username,
+                        rank=rank,
+                        username=username or 'username'
                     )
                 )
             session.commit()
-            update_sheet(user_name)
+            logging.info(f"add_admin_to_db: user_id={user_id} added/updated rank={rank}, username={username}")
     except Exception as e:
-        print(f"Failed to add manager: {e}")
+        logging.error(f"Failed to add/update user in names_table: {e}")
 
 
 def del_manager_from_db(user_id):
-    try:
-        # Создаем сессию с привязкой к движку
-        with Session(bind=engine) as session:
-            # Проверяем, существует ли пользователь в базе
-            result = session.query(names_table.c.real_user_id, names_table.c.real_name).filter(
-                names_table.c.real_user_id == user_id
-            ).first()
-
-            if result:
-                # Извлекаем имя пользователя перед удалением
-                real_user_id, real_name = result
-                # Удаляем пользователя
-                session.query(names_table).filter(names_table.c.real_user_id == user_id).delete()
-                output_text = f"Менеджер  {real_name} и id {real_user_id} удален."
-                print(output_text)
-            else:
-                output_text = f"Менеджер с user_id {user_id} не найден в базе."
-                print(output_text)
-            # Сохраняем изменения
-            session.commit()
-            return output_text
-
-    except Exception as e:
-        print(f"Не удалось удалить менеджера: {e}")
-
-
-def del_head_from_db(user_id):
-    try:
-        # Создаем сессию с привязкой к движку
-        with Session(bind=engine) as session:
-            # Проверяем, существует ли пользователь в базе
-            result = session.query(heads_table.c.head_id, heads_table.c.head_name).filter(
-                heads_table.c.head_id == user_id
-            ).first()
-
-            if result:
-                # Извлекаем имя пользователя перед удалением
-                head_id, head_name = result
-                # Удаляем пользователя
-                session.query(heads_table).filter(heads_table.c.head_id == user_id).delete()
-                output_text = f"Руководитель  {head_name} и id {head_id} удален."
-                print(output_text)
-            else:
-                output_text = f"Руководитель с user_id {user_id} не найден в базе."
-                print(output_text)
-            # Сохраняем изменения
-            session.commit()
-            return output_text
-
-    except Exception as e:
-        print(f"Не удалось удалить руководителя: {e}")
-
-
-def add_head_to_db(user_id, user_name):
+    """
+    Удаляем пользователя rank=1 (или любого rank) из names.
+    """
     try:
         with Session() as session:
-            result = session.execute(select(heads_table.c.head_id).where(heads_table.c.head_id == user_id)).fetchone()
-
-            if result:
-                # Обновляем имя, если руководитель уже есть в базе
-                session.execute(
-                    heads_table.update().where(heads_table.c.head_id == user_id).values(head_name=user_name),
-                )
-                print(f"Updated existing head with user_id {user_id} to name: {user_name}")
+            row = session.query(names_table.c.real_user_id, names_table.c.real_name).filter(
+                names_table.c.real_user_id == user_id
+            ).first()
+            if row:
+                real_user_id, real_name = row
+                session.query(names_table).filter(names_table.c.real_user_id == user_id).delete()
+                session.commit()
+                return f"Пользователь {real_name}, user_id {real_user_id} удалён."
             else:
-                # Вставляем нового руководителя
-                session.execute(
-                    heads_table.insert().values(head_id=user_id, head_name=user_name)
-                )
-                print(f"Added new head with user_id {user_id} and name: {user_name}")
-            session.commit()
+                return f"Пользователь user_id={user_id} не найден."
+    except Exception as e:
+        logging.error(f"del_manager_from_db error: {e}")
+        return f"Ошибка при удалении user_id={user_id}"
 
-        # Получаем username из Telegram и обновляем
-        username = get_head_username_from_telegram(user_id)
-        if username:
-            update_head_username_in_db(user_id, username)
-        else:
-            print("Не удалось получить username для нового руководителя.")
+
+def show_state_list():
+    """
+    Отображаем всех пользователей, группируя по rank:
+    rank=1 -> Менеджеры
+    rank=2 -> Валидаторы
+    rank=3 -> РОП
+    """
+    try:
+        with Session() as session:
+            all_users = session.execute(select(
+                names_table.c.real_name,
+                names_table.c.rank
+            )).fetchall()
+
+            # Сгруппируем по rank
+            managers = []
+            validators = []
+            rops = []
+            for row in all_users:
+                real_name, rank = row[0], row[1]
+                if rank == 1:
+                    managers.append(real_name)
+                elif rank == 2:
+                    validators.append(real_name)
+                elif rank == 3:
+                    rops.append(real_name)
+
+            output_managers = "Менеджеры:\n" + ("\n".join(managers) if managers else "Нет менеджеров.")
+            output_validators = "Валидаторы:\n" + ("\n".join(validators) if validators else "Нет валидаторов.")
+            output_rops = "РОПы:\n" + ("\n".join(rops) if rops else "Нет РОПов.")
+
+            # Выведите одним блоком или тремя — на ваше усмотрение:
+            return (output_managers, output_validators, output_rops)
 
     except Exception as e:
-        print(f"Failed to add head: {e}")
-
+        logging.error(f"Ошибка show_state_list: {e}")
+        return ("Ошибка при извлечении менеджеров.", "Ошибка при извлечении валидаторов.", "Ошибка при извлечении РОПов.")
+    
 
 def update_group_id(user_id, chat_id):
     """
@@ -432,45 +411,6 @@ def update_sheet(real_name):
         worksheet = spreadsheet.add_worksheet(title=real_name, rows="100", cols="20")
         worksheet.update('A1', [[real_name]])
         print(f"Worksheet '{real_name}' created.")
-
-
-def get_heads_ids():
-    # Connect to the database
-    with Session() as session:
-        # Fetch the head IDs
-        result = session.execute(select(heads_table.c.head_id)).fetchall()
-        # Convert results to a set of IDs
-        heads_ids = {row[0] for row in result}
-        print('heads:', heads_ids)
-    return heads_ids
-
-
-def show_state_list():
-    """
-    Извлекает и форматирует список руководителей и менеджеров из базы данных.
-    
-    Returns:
-        tuple: (строка с руководителями, строка с менеджерами).
-    """
-    try:
-        with Session() as session:
-            # Извлекаем имена руководителей
-            head_names = session.execute(select(heads_table.c.head_name)).scalars().all()
-            # Извлекаем имена менеджеров
-            manager_names = session.execute(select(names_table.c.real_name)).scalars().all()
-
-            # Форматируем списки
-            formatted_heads = '\n'.join(head_names) if head_names else "Нет руководителей."
-            formatted_managers = '\n'.join(manager_names) if manager_names else "Нет менеджеров."
-
-            # Создаём строки для вывода
-            output_heads = f"Руководители:\n{formatted_heads}"
-            output_managers = f"Менеджеры:\n{formatted_managers}"
-
-            return output_heads, output_managers
-    except Exception as e:
-        print(f"Ошибка при выполнении show_state_list: {e}")
-        return "Ошибка при извлечении руководителей.", "Ошибка при извлечении менеджеров."
 
 
 def send_daily_leads_to_group():
@@ -578,144 +518,179 @@ def get_head_username_from_telegram(head_id: int):
         return None
     
 
-def update_head_username_in_db(head_id: int, username: str):
+def mark_report_received(user_id: int, message_datetime: datetime):
     """
-    Обновить username руководителя в БД.
-    """
-    try:
-        with Session() as local_session:
-            local_session.execute(
-                heads_table.update().where(heads_table.c.head_id == head_id).values(username=username)
-            )
-            local_session.commit()
-            print(f"Username {username} обновлен для head_id {head_id}")
-    except Exception as e:
-        print(f"Ошибка при обновлении username для head_id {head_id}: {e}")
-
-
-def get_all_heads():
-    """
-    Возвращает список всех руководителей в формате [(head_name, head_id), ...]
-    """
-    with Session() as session:
-        result = session.execute(select(heads_table.c.head_name, heads_table.c.head_id)).fetchall()
-        return result
+    Ставим has_photo=1 у записи, соответствующей «дню», вычисленному 
+    по смещённым суткам (с 18:00 до 18:00). 
     
-def get_head_username_by_id(head_id):
-    with Session() as session:
-        result = session.execute(
-            select(heads_table.c.username)
-            .where(heads_table.c.head_id == head_id)
-        ).fetchone()
-        if result:
-            return result[0]
-        return None
-
-
-def mark_photo_sent(user_id: int):
+    Логика:
+    - Берём фактическую дату message_datetime (например, 2024-12-25 19:05).
+    - Если время >= 18:00, то отчёт считаем за «следующий календарный день».
+    - Иначе — за «тот же календарный день».
+    - Находим (или создаём) запись в user_info за этот день и выставляем has_photo=1.
     """
-    Отмечает, что пользователь отправил фото сегодня (has_photo = 1).
-    Если записи на сегодня в user_info не существует — создаем новую.
-    """
-    today = datetime.now().date()
+    # Приведём время к нужному часовому поясу, если нужно (пример не учитывает TZ).
+    local_dt = message_datetime  # Если уже local, то ок
+
+    # Получаем локальную дату
+    day = local_dt.date()  # напр. 2024-12-25
+    hour = local_dt.hour   # напр. 19
+
+    # Смещённая логика:
+    # Если >= 18, то отчёт идёт за day+1
+    if hour >= 18:
+        day = day + timedelta(days=1)
+    logging.info(f"Запущен mark_report_received для user_id={user_id}, day={day}.")
+
     with Session() as local_session:
+        # Ищем запись за «этот» day
         user_info = local_session.query(UserInfo).filter(
-            UserInfo.user_id == user_id,
-            func.date(UserInfo.date) == today
+            and_(
+                UserInfo.user_id == user_id,
+                func.date(UserInfo.date) == day
+            )
         ).first()
 
         if user_info:
-            # Обновляем has_photo
+            # Запись есть — обновляем has_photo=1
             user_info.has_photo = 1
+            local_session.commit()
+            logging.info(f"Отчёт обновлён: has_photo=1 для user_id={user_id}, day={day}")
         else:
-            # Создаем новую запись user_info на сегодня
+            # Создаём новую запись (без start_time, если ещё нет)
             new_record = UserInfo(
                 user_id=user_id,
-                date=datetime.now(),
+                date=day,       # Дата — уже со смещением
                 has_photo=1
             )
             local_session.add(new_record)
+            local_session.commit()
+            logging.info(f"Создана новая запись user_info (has_photo=1) для user_id={user_id}, day={day}")
 
-        local_session.commit()
-        logging.info(f"Для пользователя {user_id} зафиксировано has_photo=1 за сегодня.")
 
 
-def check_daily_reports(message_text: str):
+async def check_daily_reports(key_in_messages_table: str):
     """
-    Проверяет, у кого из пользователей за сегодня нет записи с has_photo=1.
-    Если у менеджера language='en', заменяем message_text на английский эквивалент, если он есть.
+    Получаем локализованную фразу из таблицы messages по key_in_messages_table.
+    Тегаем @username.
     """
-    eng_equivalents = {
-        "Не забудь подать скрин отчёта до 13:55 по Бали": "Don't forget to submit your report screenshot by 13:55 Bali time",
-        "Отчет!": "Report!"
-    }
-
+    logging.info(f"check_daily_reports(key='{key_in_messages_table}') запущен.")
     today = datetime.now().date()
-    with Session() as local_session:
-        # Делаем LEFT JOIN между names и user_info, чтобы получить всех менеджеров.
-        # Условие:
-        # - Если у менеджера нет записи в user_info за сегодня (user_info.id IS NULL) или has_photo=0,
-        #   значит фото не отправлено.
 
-        from sqlalchemy.orm import aliased
-        ui = aliased(UserInfo)
+    from sqlalchemy.orm import aliased
+    ui = aliased(UserInfo)
 
-        query = (local_session.query(
+    with Session() as session:  # Но SessionLocal() не async, поэтому придётся оставить sync style
+        # Здесь, чтобы не ломать сильно код, оставим sync контекст
+        session_sync = Session()
+
+        query = (session_sync.query(
                     names_table.c.real_user_id,
                     names_table.c.group_id,
                     names_table.c.language,
+                    names_table.c.username,
                     ui.has_photo
-                 )
-                 .outerjoin(ui, and_(
-                     ui.user_id == names_table.c.real_user_id,
-                     func.date(ui.date) == today
-                 ))
-                 .filter((ui.id == None) | (ui.has_photo == 0))
+                )
+                .outerjoin(ui, and_(
+                    ui.user_id == names_table.c.real_user_id,
+                    func.date(ui.date) == today
+                ))
+                .filter((ui.id == None) | (ui.has_photo == 0))
         )
 
         users = query.all()
+        session_sync.close()
 
-        for (u_id, group_id, lang, has_photo) in users:
-            if not group_id:
-                logging.info(f"Не найден group_id для user_id {u_id}")
-                continue
+    for (u_id, group_id, lang, username_in_db, has_photo) in users:
+        if not group_id:
+            logging.info(f"Не найден group_id для user_id={u_id}")
+            continue
 
-            # Если язык менеджера английский, подставляем перевод
-            if lang == 'en':
-                text_to_send = eng_equivalents.get(message_text, message_text)
-            else:
-                text_to_send = message_text
+        # Получаем текст из messages по ключу key_in_messages_table
+        phrase_text = get_message_for_user(key_in_messages_table, lang or 'ru')
+        mention = f"@{username_in_db or 'manager'}"
 
-            send_message_to_group(group_id, text_to_send)
+        text_to_send = f"{mention}, {phrase_text}"
+        await send_message_to_group(group_id, text_to_send)
 
 
-def send_message_to_group(chat_id, text):
-    url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
-    response = requests.post(url, data=payload)
-    if response.status_code == 200:
-        logging.info(f"Сообщение успешно отправлено в чат {chat_id}: {text}")
-    else:
-        logging.error(f"Ошибка при отправке сообщения в чат {chat_id}: {response.text}")
-    send_debug_message(chat_id, text)
-
-async def send_debug_message(chat_id, message_text):
+async def send_message_to_group(chat_id: int, text: str):
     """
-    Отправка сообщения в Telegram.
+    Асинхронная отправка сообщения в Telegram.
+    """
+    url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    logging.info(f"send_message_to_group -> chat_id={chat_id}, text='{text}'")
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(url, data=payload)
+        if resp.status_code == 200:
+            logging.info(f"Сообщение отправлено успешно: {resp.status_code}")
+        else:
+            logging.error(f"Ошибка при отправке: {resp.text}")
+
+    # Опционально: debug-message в отдельный чат
+    await send_debug_message(chat_id, text)
+    
+
+async def send_debug_message(chat_id: int, message_text: str):
+    """
+    Отправить debug-сообщение в лог-чат, например -4529397186.
+    """
+    debug_chat_id = -4529397186
+    debug_text = f"[DEBUG] chat_id={chat_id}: {message_text}"
+    url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
+    payload = {"chat_id": debug_chat_id, "text": debug_text}
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(url, data=payload)
+        if resp.status_code != 200:
+            logging.error(f"Ошибка при отправке debug: {resp.text}")
+
+
+async def send_report_1_message(user_id: int, user_language: str):
+    """
+    Отправляет сообщение с ключом 'report_1' пользователю user_id, получая текст из БД по языку user_language,
+    и затем отправляет это сообщение через функцию send_debug_message.
+    """
+    phrase_text = get_message_for_user('report_1', user_language)
+    mention = f"@someusername"  # или получить username пользователя, если нужно
+    text_to_send = f"{mention}, {phrase_text}"
+    await send_debug_message(user_id, text_to_send)
+
+
+
+def get_all_rops():
+    """
+    Возвращает список (rop_username, rop_real_name) для всех rank=3.
+    """
+    with Session() as local_session:
+        rows = local_session.execute(
+            select(names_table.c.username, names_table.c.real_name)
+            .where(names_table.c.rank == 3)
+        ).fetchall()
+        # rows -> [(username, real_name), ...]
+        rops = [(row[0], row[1]) for row in rows if row[0]]  # username, real_name
+    return rops
+
+
+def del_manager_from_db_by_name(real_name: str):
+    """
+    Удаляем пользователя из таблицы names по реальному имени (AMO CRM).
     """
     try:
-
-        message_text = f'Сообщение для пользователя (chat_id {chat_id}): ' + message_text
-        
-        url = f'https://api.telegram.org/bot{API_TOKEN}/sendMessage'
-        payload = {'chat_id': '-4529397186', 'text': message_text}
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, data=payload)
-            if response.status_code != 200:
-                logging.error(f"Ошибка при отправке сообщения: {response.text}")
+        with Session() as local_session:
+            row = local_session.execute(
+                select(names_table.c.real_user_id, names_table.c.real_name)
+                .where(names_table.c.real_name == real_name)
+            ).fetchone()
+            if row:
+                real_user_id, db_real_name = row
+                local_session.execute(
+                    names_table.delete().where(names_table.c.real_user_id == real_user_id)
+                )
+                local_session.commit()
+                return f"Пользователь '{db_real_name}' (ID={real_user_id}) удалён."
+            else:
+                return f"Пользователь с именем '{real_name}' не найден."
     except Exception as e:
-        logging.error(f"Ошибка при отправке сообщения: {e}")
+        logging.error(f"Ошибка при удалении пользователя по имени '{real_name}': {e}")
+        return f"Ошибка при удалении пользователя '{real_name}'"

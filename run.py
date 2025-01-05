@@ -7,7 +7,7 @@ from fastapi import FastAPI
 import uvicorn
 from contextlib import asynccontextmanager
 
-from app.scheduler import scheduler, check_scheduler_status  # Обновленный импорт
+from app.scheduler import check_scheduler_status  # Обновленный импорт
 from config import API_TOKEN
 from app.handlers import router
 from app.database.requests import update_leads_from_crm_async
