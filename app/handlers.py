@@ -34,7 +34,7 @@ async def cmd_start(message: Message):
     else:
         await message.answer("Привет! У вас нет прав для взаимодействия с этим ботом.")
 
-
+  
 @router.message(Command(commands=['help']))
 async def cmd_help(message: Message):
     if message.from_user.id in ALLOWED_IDS:
